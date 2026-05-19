@@ -1,3 +1,6 @@
 [submodule "astra-sim"]
 	path = astra-sim
 	url = https://github.com/casys-kaist/astra-sim.git
+[submodule "extern/htsim"]
+	path = extern/htsim
+	url = git@github.com:jxmils/project-GLASS-WP3-traffic.git
