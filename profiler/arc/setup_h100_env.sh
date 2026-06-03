@@ -17,8 +17,14 @@ cd "$REPO_ROOT"
 # module load python/3.12
 
 if ! command -v uv >/dev/null 2>&1; then
-    echo "ERROR: uv is not on PATH." >&2
-    echo "Load the ARC Python module that provides uv, or install uv in your user environment." >&2
+    echo "uv is not on PATH; installing it into the user Python environment."
+    python3 -m pip install --user uv
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "ERROR: uv is still not on PATH after installing with pip." >&2
+    echo "Try: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
     exit 1
 fi
 
