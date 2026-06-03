@@ -72,7 +72,10 @@ fi
 
 if [[ ! -f "$VENV_DIR/bin/activate" ]]; then
     echo "ERROR: vLLM venv not found at $VENV_DIR" >&2
-    echo "Create it on an interactive H100 node with: ./scripts/install-vllm.sh" >&2
+    echo "Create it on an interactive H100 node from the repo root with:" >&2
+    echo "  ./scripts/install-vllm.sh" >&2
+    echo "Then run interactively with:" >&2
+    echo "  VENV_DIR=$VENV_DIR bash profiler/arc/profile_h100.sh" >&2
     echo "Or submit with VENV_DIR=/path/to/venv if your environment uses a different location." >&2
     exit 1
 fi
