@@ -7,6 +7,12 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ARC_CACHE_DIR="${ARC_CACHE_DIR:-$REPO_ROOT/.arc-cache}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$ARC_CACHE_DIR/uv}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ARC_CACHE_DIR/pip}"
+mkdir -p "$UV_CACHE_DIR" "$PIP_CACHE_DIR"
+
 VENV_DIR="${VENV_DIR:-.venv}"
 uv venv "$VENV_DIR" --python 3.12
 

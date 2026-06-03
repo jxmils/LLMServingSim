@@ -83,9 +83,11 @@ fi
 # shellcheck disable=SC1090
 source "$VENV_DIR/bin/activate"
 
-export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
+ARC_CACHE_DIR="${ARC_CACHE_DIR:-$REPO_ROOT/.arc-cache}"
+export HF_HOME="${HF_HOME:-$ARC_CACHE_DIR/huggingface}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
+mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE"
 
 if [[ -z "${HF_TOKEN:-}" ]]; then
     echo "WARNING: HF_TOKEN is unset; gated model downloads may fail." >&2

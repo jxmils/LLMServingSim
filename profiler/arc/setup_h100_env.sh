@@ -11,6 +11,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Keep large package/model caches off ARC home, which has a small quota.
+ARC_CACHE_DIR="${ARC_CACHE_DIR:-$REPO_ROOT/.arc-cache}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$ARC_CACHE_DIR/uv}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$ARC_CACHE_DIR/pip}"
+export HF_HOME="${HF_HOME:-$ARC_CACHE_DIR/huggingface}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
+mkdir -p "$UV_CACHE_DIR" "$PIP_CACHE_DIR" "$HF_HOME" "$HF_DATASETS_CACHE"
+
 # Uncomment and adjust for the ARC module stack available to your account.
 # module purge
 # module load cuda/12.4
@@ -29,6 +38,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 echo "Creating vLLM profiler environment in $REPO_ROOT/.venv"
+echo "Using UV cache at $UV_CACHE_DIR"
+echo "Using Hugging Face cache at $HF_HOME"
 ./scripts/install-vllm.sh
 
 echo

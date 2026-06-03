@@ -12,6 +12,12 @@ __pycache__/
 # Ignore bench results
 bench/results/
 
+# Local ARC / installer caches
+.venv/
+.venv-vllm/
+.arc-cache/
+.uv-cache/
+
 # AI agent cache files
 .claude/
 .codex/
