@@ -8,7 +8,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=gpu_sku:H100
 #SBATCH --mem=128G
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=slurm-logs/profile_h100_%j.out
 #SBATCH --error=slurm-logs/profile_h100_%j.err
 #
@@ -29,7 +29,7 @@ set -euo pipefail
 MODEL="${MODEL:-meta-llama/Llama-3.1-8B}"
 HARDWARE="${HARDWARE:-H100}"
 
-TP_DEGREES="${TP_DEGREES:-1,2}"
+TP_DEGREES="${TP_DEGREES:-1}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-2048}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-256}"
 ATTENTION_MAX_KV="${ATTENTION_MAX_KV:-16384}"
