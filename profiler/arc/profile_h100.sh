@@ -98,6 +98,14 @@ fi
 nvidia-smi
 echo
 
+if [[ -n "${CLEAN_STALE_VLLM:-}" ]]; then
+    echo "CLEAN_STALE_VLLM is set; stopping stale vLLM EngineCore processes for user $USER"
+    pkill -u "$USER" -f "VLLM::EngineCore|vllm.*engine" || true
+    sleep 5
+    nvidia-smi
+    echo
+fi
+
 cmd=(python3 -m profiler profile "$MODEL" --hardware "$HARDWARE")
 cmd+=(--tp "$TP_DEGREES")
 cmd+=(--max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
