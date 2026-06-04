@@ -8,7 +8,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=gpu_sku:H100
 #SBATCH --mem=128G
-#SBATCH --time=00:05:00
+#SBATCH --time=04:00:00
 #SBATCH --output=slurm-logs/profile_h100_%j.out
 #SBATCH --error=slurm-logs/profile_h100_%j.err
 #
@@ -54,6 +54,8 @@ echo "Repo:      $REPO_ROOT"
 echo "Model:     $MODEL"
 echo "Hardware:  $HARDWARE"
 echo "TP:        $TP_DEGREES"
+echo "Partition: ${SLURM_JOB_PARTITION:-unknown}"
+echo "TimeLimit: ${SLURM_TIMELIMIT:-unknown} minutes"
 echo "Started:   $(date -Is)"
 echo
 
@@ -111,6 +113,8 @@ cmd+=(--measurement-iterations "$MEASUREMENT_ITERATIONS")
 [[ -n "${KV_CACHE_DTYPE:-}" ]]  && cmd+=(--kv-cache-dtype "$KV_CACHE_DTYPE")
 [[ -n "${VARIANT:-}" ]]         && cmd+=(--variant "$VARIANT")
 [[ -n "${VERBOSITY:-}" ]]       && cmd+=($VERBOSITY)
+
+export PYTHONUNBUFFERED=1
 
 echo "Running: ${cmd[*]}"
 echo
