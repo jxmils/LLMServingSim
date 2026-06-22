@@ -15,7 +15,9 @@ The shim must keep stdout compatible with ``serving.core.controller.Controller``
 * print ``Waiting`` whenever the process can accept another command;
 * for a workload command, print
   ``sys[N] iteration I finished, C cycles, exposed communication X cycles.``;
-* then print ``Waiting`` again.
+* then print ``Waiting`` again;
+* after ``exit``, print ``All Request Has Been Exited`` so ``check_end`` can
+  terminate cleanly.
 """
 
 from __future__ import annotations
@@ -101,6 +103,10 @@ def _print_completion(sys_id: int, iteration_id: int, cycles: int) -> None:
     )
 
 
+def _print_end_marker() -> None:
+    print("All Request Has Been Exited", flush=True)
+
+
 def main() -> int:
     args = _parse_args()
     fixed_cycles = max(0, args.fixed_cycles)
@@ -123,6 +129,7 @@ def main() -> int:
 
         if command == "exit":
             _log(args.shim_log, "exit")
+            _print_end_marker()
             return 0
 
         if command in {"pass", "done"}:
