@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """ASTRA-Sim protocol compatibility shim for the HTSim backend.
 
-This is intentionally a protocol stub.  It lets ``python -m serving`` launch a
+This is intentionally a protocol stub. It lets ``python -m serving`` launch a
 non-ASTRA process while reusing the existing ``Controller`` stdin/stdout
-contract.  Later milestones should replace the fixed cycle model below with:
+contract. Later milestones should replace the fixed cycle model below with:
 
 1. workload/trace path mapping,
 2. HTSim flow export,
@@ -16,8 +16,8 @@ The shim must keep stdout compatible with ``serving.core.controller.Controller``
 * for a workload command, print
   ``sys[N] iteration I finished, C cycles, exposed communication X cycles.``;
 * then print ``Waiting`` again;
-* after ``exit``, print ``All Request Has Been Exited`` so ``check_end`` can
-  terminate cleanly.
+* after ``exit``, print ``All Request Has Been Exited`` and one trailing line so
+  ``check_end`` can terminate cleanly.
 """
 
 from __future__ import annotations
@@ -105,6 +105,16 @@ def _print_completion(sys_id: int, iteration_id: int, cycles: int) -> None:
 
 def _print_end_marker() -> None:
     print("All Request Has Been Exited", flush=True)
+    # Controller.check_end() stops when the marker is out[-2], so it needs one
+    # additional line after the marker. Keep this line non-protocol/debug-only.
+    print("HTSim ASTRA shim exiting", flush=True)
+
+
+def _emit_workload_completion(workload: str, start_npu_ids: str, fixed_cycles: int) -> None:
+    normalized = os.path.normpath(workload)
+    sys_id = _parse_sys_id(normalized, start_npu_ids)
+    iteration_id = _parse_iteration_id(normalized)
+    _print_completion(sys_id, iteration_id, fixed_cycles)
 
 
 def main() -> int:
@@ -116,6 +126,12 @@ def main() -> int:
     _log(args.shim_log, f"system={args.system_configuration}")
     _log(args.shim_log, f"network={args.network_configuration}")
     _log(args.shim_log, f"memory={args.memory_configuration}")
+
+    # ASTRA and ASTRA/ns-3 receive an initial --workload-configuration at
+    # process launch. Emit a completion for that initial workload before the
+    # first Waiting so LLMServingSim can parse out[-2] on its first read_wait().
+    if args.workload_configuration:
+        _emit_workload_completion(args.workload_configuration, args.start_npu_ids, fixed_cycles)
 
     _print_waiting()
 
@@ -136,13 +152,10 @@ def main() -> int:
             _print_waiting()
             continue
 
-        # Treat every other line as an ASTRA workload path.  We deliberately do
+        # Treat every other line as an ASTRA workload path. We deliberately do
         # not require the path to exist yet; ns-3 and analytical ASTRA receive
         # workload paths, and this milestone only validates the protocol.
-        workload = os.path.normpath(command)
-        sys_id = _parse_sys_id(workload, args.start_npu_ids)
-        iteration_id = _parse_iteration_id(workload)
-        _print_completion(sys_id, iteration_id, fixed_cycles)
+        _emit_workload_completion(command, args.start_npu_ids, fixed_cycles)
         _print_waiting()
 
     return 0
