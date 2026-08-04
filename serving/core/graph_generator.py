@@ -3,14 +3,16 @@ import subprocess
 from time import time
 from .request import *
 from .logger import get_logger
+from .run_paths import input_path
 
 logger = get_logger("GraphGenerator")
 
-def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None):
+def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offset=0, enable_local_offloading=False, event=False, workload_name=None, inputs_root=None, cleanup_trace=True):
 
     cwd = os.getcwd()
     chakra = os.path.join(cwd, "extern/graph_frontend/chakra")
-    os.chdir(chakra)
+    if inputs_root is None:
+        inputs_root = os.path.join(cwd, "inputs")
 
     if event:
         file_name = 'event_handler'
@@ -20,21 +22,28 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
     # For DP groups, all instances write .et files to a shared workload folder
     output_name = workload_name if workload_name else file_name
 
-    workload_dir = f'../../../inputs/workload/{output_name}'
+    trace_path = input_path(inputs_root, "trace", f"{file_name}.txt")
+    output_path = input_path(inputs_root, "workload", output_name, "llm")
+    workload_dir = os.path.dirname(output_path)
     os.makedirs(workload_dir, exist_ok=True)
 
-    cmd = f'python -m chakra.src.converter.converter LLM ' \
-            f'--input ../../../inputs/trace/{file_name}.txt ' \
-            f'--output ../../../inputs/workload/{output_name}/llm ' \
-            f'--num-npus {num_npus} ' \
-            f'--npu-offset {npu_offset}'
+    cmd = [
+        'python', '-m', 'chakra.src.converter.converter', 'LLM',
+        '--input', trace_path,
+        '--output', output_path,
+        '--num-npus', str(num_npus),
+        '--npu-offset', str(npu_offset),
+    ]
 
     if enable_local_offloading:
-        cmd += ' --local-offloading'
+        cmd.append('--local-offloading')
 
-    logger.debug("Generating graph with command: %s", cmd, extra={"node_id": node_id, "instance_id": instance_id})
+    logger.debug("Generating graph with command: %s", " ".join(cmd), extra={"node_id": node_id, "instance_id": instance_id})
 
-    cmd = cmd.split()
-    subprocess.run(cmd, text=True)    
-    os.chdir(cwd)
+    subprocess.run(cmd, cwd=chakra, text=True, check=True)
+    if cleanup_trace:
+        try:
+            os.remove(trace_path)
+        except FileNotFoundError:
+            pass
     return

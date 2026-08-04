@@ -6,6 +6,155 @@ description: LLMServingSim release history
 All notable changes to this project are documented in this file.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) conventions.
 
+## [Unreleased]
+
+### Added
+- Public Docusaurus 3 documentation site at
+  [llmservingsim.ai](https://llmservingsim.ai), built from `docs/` and
+  deployed via GitHub Actions Pages. Replaces the old `docs/index.html`
+  placeholder and shifts long-form content (CLI flag tables, dataset
+  schema, profiler walkthroughs, validation plots, etc.) off the README.
+  The repo's `README.md` is now a minimal front door (About / Getting
+  Started / Publications / Citation) that links to the website. The
+  `README and docs split` policy is documented in `AGENTS.md` /
+  `CLAUDE.md`.
+- Local search on the docs site via
+  `@easyops-cn/docusaurus-search-local`. Indexes all `/docs/*` and
+  top-level page routes (Contact, Changelog) at build time. Access via
+  the navbar input or Ctrl/Cmd-K once the production build runs (dev
+  mode does not generate the index — `pnpm build && pnpm serve` to test
+  locally).
+- Module helper `full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype)`
+  in `serving/core/memory_model.py`. Computes full-cluster KV bytes per
+  token directly from a HuggingFace-style config, avoiding the per-rank
+  floor-division roundoff in `MemoryModel.get_kv(1) * num_npus`. Used by
+  `__main__.py` to size shared prefix pools at startup, before any
+  `MemoryModel` exists.
+
+### Changed
+- Trace-level PP modeling write-up overhauled in
+  `docs/docs/simulator/parallelism-mechanics.md` — explicitly describes
+  the Chakra layer split + `COMM_SEND` / `COMM_RECV` between stages,
+  with a stage-split figure. Replaces the previous
+  "scheduling-only / lower bound" framing which underdescribed what
+  the simulator actually models.
+- `--expert-routing-policy` default documented as `BALANCED`
+  everywhere (expert-parallel example, troubleshooting,
+  trace-generation, `AGENTS.md`) — the earlier docs referenced a
+  non-existent `COPY` default. `CUSTOM` listed under both request- and
+  expert-routing options; `--enable-block-copy` decoupled from routing
+  policy in the docs.
+- `LOAD` request-routing scoring (`waiting * 4 + running`) documented
+  in the multi-instance example. Policy lists reformatted into bullets
+  across affected pages.
+- `MemoryModel.get_weight` now divides the transformer-block weight by
+  `pp_size` (heaviest-rank conservative bound:
+  `embedding + n_layer//pp × per_block + final_layernorm + lm_head`).
+  Required adding a `pp_size` parameter to `MemoryModel.__init__`
+  (threaded through from `Scheduler`). PP=1 behavior unchanged — fix
+  only affects future PP > 1 runs (no current cluster config exercises
+  PP > 1).
+- `MemoryModel.apply_kv_cache_events` now drains the second-tier event
+  queue for CXL prefix storage and CPU + prefix-sharing modes (in
+  addition to the previously-handled CPU non-sharing case). The CPU
+  non-sharing branch keeps bridging events into `cpu_used`; the other
+  paths just drain the queue (no accounting impact — pool memory usage
+  is already tracked via `total_size * kv_size` in `total_memory_usage`).
+  Prevents unbounded growth of the event queue over the simulation
+  lifetime.
+
+### Fixed
+- Chunked prefill double-counted prefix-cache hits. In
+  `schedule_with_prefix`, `chunk_size = original_input - num_computed_tokens`
+  already excludes prefix-cached tokens (because `num_computed_tokens`
+  is bumped to `prefix_cache_hit` on the first `prefix_match`). The
+  scheduler then accumulated `hit_len += prefix_hit` on top of that,
+  and `_build_batch_ctx` (trace_generator.py) subtracted the prefix
+  hit a second time — collapsing `total_len` to 1 for any prefill
+  chunk with prefix caching on. Dense-layer latency and TP collective
+  sizing were both being looked up at 1 token instead of `chunk_size`.
+  Fix: drop the second subtraction; sub-batch interleaving and the
+  `Batch.hit_len` field were removed as part of the cleanup.
+- `_make_sub_batch` (sub-batch interleaving) was not chunked-prefill
+  aware: it used `req.is_init` (later chunks have `is_init=False` and
+  would be misclassified as decode), `req.input` (full prompt length
+  instead of this step's chunk), and `prefill_k_list=0` (ignoring KV
+  already produced by prior chunks). It also failed to reset
+  `prefill_q_list` / `prefill_k_list` / `decode_k_list` between the
+  two sub-batches, leaking batch1 state into batch2. Now reads
+  `batch.scheduled_tokens` (set by the scheduler), keys off
+  `req.is_prefill()`, and uses `req.num_computed_tokens` for KV
+  already in cache.
+- `MemoryModel.evict_prefix_cache` over-evicted the second-tier
+  (CPU/CXL) cache by `num_npus`× because `space_needed` was computed
+  with the per-rank `self._bytes_per_token` while each second-tier
+  token represents full-cluster bytes (`per-rank × num_npus`). Now
+  uses the cache's own `kv_size` for the per-token bytes (per-rank for
+  NPU, full-cluster for second-tier). TP=1 unaffected; TP>1 prefix
+  hit rates were collapsing as the storage tier was over-evicted on
+  every spill.
+- `MemoryModel.evict_prefix_cache` early-return guard required *both*
+  `not enable_prefix_caching` AND `bytes <= 0`. Changed to `or` — the
+  intent is to return early if either condition holds.
+- NPU→CPU offload alloc/free in `scheduler.py` used per-rank bytes
+  while prefix-cache events tracked full-cluster bytes
+  (`get_kv(tlen) * num_npus`). At TP>1 `cpu_used` drifted between
+  the two paths. Offload paths now scale by `num_npus` to match the
+  existing CPU accounting convention so `cpu_used` is consistently
+  full-cluster bytes per instance.
+- `MemoryModel.storage_cache_evicted_req` called
+  `npu_prefix_cache.inc_lock_ref(new_last_node)` where
+  `new_last_node` belongs to the **second-tier** prefix tree.
+  Walking up parents from a foreign-tree node never reaches
+  `npu_prefix_cache.root_node` and ultimately dereferences `None`,
+  crashing the simulator when evicting from NPU to CPU/CXL storage
+  with prefix caching on. Now uses the correct tree (PR #25).
+- `MemoryModel.avail_size` returned `RadixCache.avail_size() *
+  self._bytes_per_token`, but `RadixCache.avail_size()` already
+  returns bytes (`capacity - total_memory_usage()`). The extra
+  multiplication produced a meaninglessly large value, making
+  scheduler decisions based on it (e.g.
+  `avail_size + evictable_size`) under-conservative even at TP=1.
+  Now passes the byte value through unchanged (PR #25).
+- Hardcoded `131072` bytes-per-token (Llama-3.1-8B bf16-specific)
+  in five sites in `serving/__main__.py` (prefix-pool creation +
+  CPU/CXL usage display) replaced with model-aware values: pools
+  now build via `full_cluster_kv_bytes_per_token` at startup, and
+  display lines use each `RadixCache`'s own `kv_size`. Fixes
+  utilization readout for non-Llama-3.1-8B models (Qwen3 family,
+  etc.).
+- Tuple-unpacking crash in the CXL + prefix-sharing display path:
+  `for i, cxl_id, cxl_pool in enumerate(prefix_pools):` would
+  raise `ValueError: not enough values to unpack` because
+  `enumerate()` yields 2-tuples. Replaced with proper 2-element
+  unpacking.
+- Refreshed validation baselines + website plots after the
+  chunked-prefill + prefix-cache fix. Means / P99s now slightly
+  over-predict vLLM instead of slightly under-predicting (the
+  prior under-prediction came from dense layers being looked up
+  at 1 token whenever a prefill chunk had any prefix-cache hit).
+  All three bundled configurations still land within ~2.5% on
+  TTFT / TPOT / latency means.
+
+### Security
+- Bump `fast-uri` to ≥3.1.2 (CVE-2026-6321 path traversal via
+  percent-encoded dot segments + CVE-2026-6322 host confusion via
+  percent-encoded authority delimiters, both rated High). Pinned in
+  `pnpm.overrides` since the package ships as a transitive
+  Docusaurus dependency.
+- Bump `@babel/plugin-transform-modules-systemjs` to ≥7.29.4
+  (GHSA-fv7c-fp4j-7gwp, CVE-2026-44728, High). Arbitrary code
+  generation when compiling malicious input; affects 7.12.0–7.29.3.
+  We shipped 7.29.0 via `@docusaurus/preset-classic`. Pinned in
+  `pnpm.overrides`.
+- Bump `serialize-javascript` to ≥7.0.5 (Dependabot, XSS via
+  deferred function / regexp serialization). Pulled in transitively
+  by `copy-webpack-plugin` and `css-minimizer-webpack-plugin` in
+  Docusaurus 3.10.
+- Bump `uuid` to ≥14.0.0 (Dependabot, missing buffer bounds check
+  in v3/v5/v6 when `buf` is provided). Replaces both transitive
+  8.3.2 (via `sockjs`) and 11.1.1.
+
 ## [v1.1.0] - 2026-04-26
 
 ### Added

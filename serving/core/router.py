@@ -53,32 +53,47 @@ class Router:
     # Instance selection policies
     # -----------------------------------------------------------------------
 
-    def _rr_select(self, num_instances):
-        idx = self.prefill_rr_counter % num_instances
-        self.prefill_rr_counter += 1
+    def _get_counter(self, role):
+        return self.decode_rr_counter if role == "decode" else self.prefill_rr_counter
+
+    def _set_counter(self, role, value):
+        if role == "decode":
+            self.decode_rr_counter = value
+        else:
+            self.prefill_rr_counter = value
+
+    def _rr_select(self, schedulers, role):
+        num_instances = len(schedulers)
+        idx = self._get_counter(role) % num_instances
+        self._set_counter(role, idx + 1)
         return idx
 
-    def _rand_select(self, num_instances):
-        return self._rnd.randrange(num_instances)
+    def _rand_select(self, schedulers, role):
+        return self._rnd.randrange(len(schedulers))
 
-    def _least_load_select(self, num_instances):
-        """vLLM-style least-loaded routing: score = waiting * 4 + running."""
+    def _least_load_select(self, schedulers, role):
+        """vLLM-style least-loaded routing, normalized by instance capacity."""
         best_idx = 0
         best_score = float('inf')
-        start = self.prefill_rr_counter % num_instances
+        num_instances = len(schedulers)
+        start = self._get_counter(role) % num_instances
         for offset in range(num_instances):
             idx = (start + offset) % num_instances
-            sched = self.prefill_schedulers[idx]
+            sched = schedulers[idx]
             waiting = len(sched.request)
             running = sum(len(b.requests) for b in sched.inflight)
-            score = waiting * 4 + running
+            raw_score = waiting * 4 + running
+            capacity = getattr(sched, "max_num_seqs", 0)
+            score = raw_score
+            if capacity not in (0, float('inf')):
+                score = raw_score / capacity
             if score < best_score:
                 best_score = score
                 best_idx = idx
-        self.prefill_rr_counter = (best_idx + 1) % num_instances
+        self._set_counter(role, (best_idx + 1) % num_instances)
         return best_idx
 
-    def _custom_select(self, num_instances):
+    def _custom_select(self, schedulers, role):
         raise NotImplementedError("Implement custom routing policy.")
 
     # -----------------------------------------------------------------------
@@ -183,21 +198,21 @@ class Router:
             if req_data['arrival_time_ns'] > current_time_ns:
                 break
 
-            instance_id = self._select_instance(self.prefill_instances)
+            instance_id = self._select_instance(self.prefill_schedulers, "prefill")
             sched = self.prefill_schedulers[instance_id]
 
-            if self._enable_prefix_caching:
+            if sched.enable_prefix_caching:
                 sched.add_request([
                     req_data['index'], sched.model,
                     req_data['input_toks'], req_data['output_toks'],
-                    req_data['arrival_time_ns'], instance_id,
-                    req_data['input_hash_ids'], req_data['output_hash_ids'],
+                    req_data['arrival_time_ns'], sched.instance_id,
+                    req_data.get('input_hash_ids', []), req_data.get('output_hash_ids', []),
                 ], is_init=self._is_init)
             else:
                 sched.add_request([
                     req_data['index'], sched.model,
                     req_data['input_toks'], req_data['output_toks'],
-                    req_data['arrival_time_ns'], instance_id,
+                    req_data['arrival_time_ns'], sched.instance_id,
                 ], is_init=self._is_init)
 
             self._pending_idx += 1
@@ -308,5 +323,5 @@ class Router:
 
     def transfer_prefill_request(self, requests):
         for req in requests:
-            instance_id = self._select_instance(self.decode_instances)
+            instance_id = self._select_instance(self.decode_schedulers, "decode")
             self.decode_schedulers[instance_id].add_decode(req)

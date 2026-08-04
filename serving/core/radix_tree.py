@@ -303,13 +303,17 @@ class RadixCache():
             new_prefix_len = self.insert(insert_token_ids)
             # print("[radix_tree: insert()] req_id: {}, insert_len: {}, total_size_after: {}, new_prefix_len: {}".format(req.id, len(insert_token_ids), self.total_size(), new_prefix_len))
 
-            # Track prefix cache stats on first insert (is_init=True, before it's cleared)
+            # Track prefix cache stats once per request, even when chunked prefill
+            # inserts the same request after multiple partial chunks.
             if req.is_init and update:
-                self.total_requested_tokens += req.original_input
-                if self.device == 'NPU':
+                if self.device == 'NPU' and not req._prefix_npu_stats_counted:
+                    self.total_requested_tokens += req.original_input
                     self.total_hit_tokens += req.npu_cache_hit
-                elif self.device == 'CPU' or self.device == 'CXL':
+                    req._prefix_npu_stats_counted = True
+                elif (self.device == 'CPU' or self.device == 'CXL') and not req._prefix_storage_stats_counted:
+                    self.total_requested_tokens += req.original_input
                     self.total_hit_tokens += max(0, req.storage_cache_hit - req.npu_cache_hit)
+                    req._prefix_storage_stats_counted = True
 
             # The prefix indices could be updated, reuse it
             result = self.match_prefix(insert_token_ids)

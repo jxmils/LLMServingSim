@@ -33,10 +33,14 @@ generates derived ASTRA-Sim input files (`network.yml`,
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `num_nodes` | int | ✓ |  | Number of physical nodes in the cluster |
-| `link_bw` | float | ✓ |  | Inter-node link bandwidth in **GB/s** |
-| `link_latency` | float | ✓ |  | Inter-node link latency in **ns** |
+| `link_bw` | float or float[] | ✓ |  | ASTRA-Sim topology link bandwidth in **GB/s**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank |
+| `link_latency` | float or float[] | ✓ |  | ASTRA-Sim topology link latency in **ns**. Scalars apply to every topology dimension; arrays must match the final `network.yml::npus_count` rank |
 | `nodes` | array | ✓ |  | Length must equal `num_nodes` |
 | `cxl_mem` | object | optional | absent | CXL memory expansion (see below) |
+
+Example: if `network.yml` will end up with `npus_count: [4, 2]`, you may set
+`link_bw: [900, 100]` and `link_latency: [0, 20000]` to assign different
+bandwidth/latency per topology dimension.
 
 ## `cxl_mem` (top-level, optional)
 
@@ -131,6 +135,8 @@ schema. Top-level structure:
   "ep_size": 1,
   "dp_group": null,
   "pd_type": null,
+  "max_num_seqs": 128,
+  "max_num_batched_tokens": 2048,
   "placement": {...}
 }
 ```
@@ -161,6 +167,28 @@ schema. Top-level structure:
 - `num_npus == tp_size * pp_size` (always)
 - Without `dp_group`: `ep_size <= tp_size`
 - For MoE: `ep_size` must divide `num_local_experts`
+
+### Runtime overrides (optional)
+
+These fields override the matching `python -m serving` CLI flag for this
+instance only. Omitted fields keep the CLI value; for `dtype`, an omitted CLI
+value still falls back to the model config's `torch_dtype`.
+
+| Field | Type | CLI fallback | Description |
+| --- | --- | --- | --- |
+| `max_num_seqs` | int | `--max-num-seqs` | Max active sequences for this instance. `0` means unlimited |
+| `max_num_batched_tokens` | int | `--max-num-batched-tokens` | Per-iteration token budget for this instance. `0` means unlimited |
+| `long_prefill_token_threshold` | int | `--long-prefill-token-threshold` | Per-request chunk cap for chunked prefill |
+| `block_size` | int | `--block-size` | KV-cache block size in tokens |
+| `dtype` | string | `--dtype` | Weight/profile dtype for this instance |
+| `kv_cache_dtype` | string | `--kv-cache-dtype` | KV-cache dtype for memory accounting and profile variant selection |
+| `enable_chunked_prefill` | bool | `--enable-chunked-prefill` | Enable chunked prefill in this instance's scheduler |
+| `enable_prefix_caching` | bool | `--enable-prefix-caching` | Enable this instance's local prefix cache |
+| `prioritize_prefill` | bool | `--prioritize-prefill` | Prefer prefill requests when forming batches |
+| `enable_local_offloading` | bool | `--enable-local-offloading` | Emit graph conversion with local offloading for this instance |
+| `enable_attn_offloading` | bool | `--enable-attn-offloading` | Emit PIM attention offload for this instance |
+| `enable_sub_batch_interleaving` | bool | `--enable-sub-batch-interleaving` | Enable sub-batch interleaving for this instance |
+| `enable_block_copy` | bool | `--enable-block-copy` | Reuse one block trace across repeated transformer blocks |
 
 ### `placement` (optional)
 

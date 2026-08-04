@@ -2,6 +2,8 @@ import os
 from time import time
 import json
 
+from .run_paths import input_path
+
 
 # Formatting string for a trace file's per-layer row. Kept in this
 # module because trace writers live across the codebase and import it
@@ -22,7 +24,7 @@ _FMT = (
 )
 
 
-def get_workload(batch, hardware, instance_id=0, event=False, workload_name=None):
+def get_workload(batch, hardware, instance_id=0, event=False, workload_name=None, inputs_root=None):
     if event:
         file_name = 'event_handler'
     elif workload_name:
@@ -30,8 +32,9 @@ def get_workload(batch, hardware, instance_id=0, event=False, workload_name=None
     else:
         file_name = f'{hardware}/{batch.model}/instance{instance_id}_batch{batch.batch_id}'
 
-    cwd = os.getcwd()
-    return cwd + f"/inputs/workload/{file_name}/llm"
+    if inputs_root is None:
+        inputs_root = os.path.join(os.getcwd(), "inputs")
+    return input_path(inputs_root, "workload", file_name, "llm")
 
 
 def header():

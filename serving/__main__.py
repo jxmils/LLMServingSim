@@ -10,6 +10,7 @@ import os
 import subprocess
 import argparse
 import json
+import shutil
 from time import time
 from collections import defaultdict
 
@@ -25,6 +26,7 @@ from serving.core.config_builder import *
 from serving.core.router import *
 from serving.core.power_model import *
 from serving.core.logger import *
+from serving.core.run_paths import build_run_paths, resolve_run_id
 import sys as flush
 
 try:
@@ -61,6 +63,134 @@ def _pad_batch_to_max(batch, max_len):
     batch.total_len = max_len
     batch.kv_len += pad                  # each dummy contributes kv=1
     batch.num_decode += pad              # counted for lm_head / dense shape
+
+
+def _runtime_limit(value):
+    return float('inf') if value == 0 else value
+
+
+def _cluster_config_path(path):
+    if os.path.isabs(path):
+        return path
+    return os.path.join("..", path)
+
+
+def _load_cluster_config_for_overrides(path):
+    with open(_cluster_config_path(path), "r") as f:
+        return json.load(f)
+
+
+def _resolve_output_file(path, run_id):
+    if path is None:
+        return None
+    return path.replace("{run_id}", run_id)
+
+
+def _cleanup_inputs_root(run_paths, logger):
+    """Remove generated ASTRA-Sim inputs after a completed simulation."""
+    runs_root = os.path.abspath(os.path.join("inputs", "runs"))
+    inputs_root = os.path.abspath(run_paths.inputs_root)
+    if inputs_root in (os.path.abspath("inputs"), runs_root):
+        raise RuntimeError(f"Refusing to remove broad inputs root: {inputs_root}")
+    if not inputs_root.startswith(runs_root + os.sep):
+        logger.warning(
+            "Skipping ASTRA-Sim inputs cleanup because inputs_root is outside %s: %s",
+            runs_root, inputs_root,
+        )
+        return
+    shutil.rmtree(inputs_root, ignore_errors=True)
+    logger.info("Removed ASTRA-Sim inputs root: %s", inputs_root)
+
+
+def _prepare_ns3_config(astra_sim, run_paths):
+    template = os.path.join(astra_sim, "extern/network_backend/ns-3/scratch/config/config.txt")
+    output_dir = os.path.join(run_paths.inputs_root, "ns3", "output")
+    config_path = os.path.join(run_paths.inputs_root, "ns3", "config.txt")
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+    replacements = {
+        "FLOW_FILE": os.path.join(output_dir, "flow.txt"),
+        "TRACE_FILE": os.path.join(output_dir, "trace.txt"),
+        "TRACE_OUTPUT_FILE": os.path.join(output_dir, "mix.tr"),
+        "FCT_OUTPUT_FILE": os.path.join(output_dir, "fct.txt"),
+        "PFC_OUTPUT_FILE": os.path.join(output_dir, "pfc.txt"),
+        "QLEN_MON_FILE": os.path.join(output_dir, "qlen.txt"),
+    }
+
+    for path in (replacements["FLOW_FILE"], replacements["TRACE_FILE"]):
+        open(path, "w").close()
+
+    with open(template, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        for line in lines:
+            parts = line.split(maxsplit=1)
+            if parts and parts[0] in replacements:
+                f.write(f"{parts[0]} {replacements[parts[0]]}\n")
+            else:
+                f.write(line)
+    return config_path
+
+
+def _iter_raw_instances(cluster_config):
+    for node in cluster_config.get("nodes", []):
+        for instance in node.get("instances", []):
+            yield instance
+
+
+def _resolve_instance_dtype(instance, cli_dtype, dtype_to_bits):
+    dtype = instance.get("dtype", cli_dtype)
+    if dtype is None:
+        config = get_config(instance["model_name"])
+        torch_dtype = config.get("torch_dtype")
+        if isinstance(torch_dtype, str) and torch_dtype in dtype_to_bits:
+            dtype = torch_dtype
+        else:
+            dtype = "bfloat16"
+    if dtype not in dtype_to_bits:
+        raise ValueError(f"Unsupported dtype '{dtype}' for instance {instance.get('instance_id')}")
+    return dtype
+
+
+def _build_instance_runtime_configs(instances, args, dtype_to_bits):
+    runtime_configs = []
+    for instance_id, instance in enumerate(instances):
+        dtype = _resolve_instance_dtype(instance, args.dtype, dtype_to_bits)
+        kv_cache_dtype = instance.get("kv_cache_dtype", args.kv_cache_dtype)
+        if kv_cache_dtype not in ("auto", "fp8"):
+            raise ValueError(f"Unsupported kv_cache_dtype '{kv_cache_dtype}' for instance {instance_id}")
+
+        enable_attn_offloading = instance.get("enable_attn_offloading", args.enable_attn_offloading)
+        enable_sub_batch_interleaving = instance.get(
+            "enable_sub_batch_interleaving", args.enable_sub_batch_interleaving)
+        if enable_sub_batch_interleaving and not enable_attn_offloading:
+            raise RuntimeError(
+                f"Instance {instance_id} enables sub-batch interleaving without attention offloading")
+
+        runtime_configs.append({
+            "max_num_seqs": _runtime_limit(instance.get("max_num_seqs", args.max_num_seqs)),
+            "max_num_batched_tokens": _runtime_limit(
+                instance.get("max_num_batched_tokens", args.max_num_batched_tokens)),
+            "long_prefill_token_threshold": instance.get(
+                "long_prefill_token_threshold", args.long_prefill_token_threshold),
+            "block_size": instance.get("block_size", args.block_size),
+            "dtype": dtype,
+            "fp": dtype_to_bits[dtype],
+            "kv_cache_dtype": kv_cache_dtype,
+            "enable_chunked_prefill": instance.get(
+                "enable_chunked_prefill", args.enable_chunked_prefill),
+            "enable_prefix_caching": instance.get(
+                "enable_prefix_caching", args.enable_prefix_caching),
+            "prioritize_prefill": instance.get("prioritize_prefill", args.prioritize_prefill),
+            "enable_local_offloading": instance.get(
+                "enable_local_offloading", args.enable_local_offloading),
+            "enable_attn_offloading": enable_attn_offloading,
+            "enable_sub_batch_interleaving": enable_sub_batch_interleaving,
+            "enable_block_copy": instance.get("enable_block_copy", args.enable_block_copy),
+        })
+    return runtime_configs
 
 
 def main():
@@ -139,7 +269,17 @@ def main():
                         'If None, requests must be added manually in serving/__main__.py')
     parser.add_argument('--output', type=str, default=None,
                         help='path for per-request CSV output with latency metrics (TTFT, TPOT, ITL). '
-                        'If None, results are printed to stdout only')
+                        'If None, results are printed to stdout only. Supports {run_id} placeholder')
+    parser.add_argument('--run-id', type=str, default=None,
+                        help='unique id for this simulation run. Intermediate ASTRA-Sim inputs are written under '
+                        'astra-sim/inputs/runs/<run-id>. If omitted, a process-unique id is generated')
+    parser.add_argument('--inputs-root', type=str, default=None,
+                        help='override the root directory for generated ASTRA-Sim inputs. Defaults to '
+                        'astra-sim/inputs/runs/<run-id>')
+    parser.add_argument('--cleanup-inputs', action=argparse.BooleanOptionalAction, default=True,
+                        help='remove generated ASTRA-Sim inputs under astra-sim/inputs/runs/<run-id> '
+                        'after a successful simulation (default: enabled). Use --no-cleanup-inputs '
+                        'to preserve generated trace files, Chakra workloads, and input configs for debugging')
     parser.add_argument('--skip-prefill', action='store_true', default=False,
                         help='skip the prefill phase, running decode only')
     parser.add_argument('--num-reqs', type=int, default=0,
@@ -157,6 +297,11 @@ def main():
 
     args = parser.parse_args()
     
+    args.run_id = resolve_run_id(args.run_id)
+    run_paths = build_run_paths(astra_sim, args.run_id, args.inputs_root)
+    args.inputs_root = run_paths.inputs_root
+    args.output = _resolve_output_file(args.output, args.run_id)
+
     configure_logger(level=args.log_level)
     logger = get_logger("Main")
     print_banner()
@@ -164,55 +309,27 @@ def main():
     print_markup("[sim.heading]▶ Starting simulation...[/]\n")
     flush.stdout.flush()
     
-    max_num_seqs=args.max_num_seqs if args.max_num_seqs != 0 else float('inf')
-    max_num_batched_tokens=args.max_num_batched_tokens if args.max_num_batched_tokens != 0 else float('inf')
-    long_prefill_token_threshold=args.long_prefill_token_threshold
-    block_size=args.block_size
-    # Resolve dtype: CLI overrides; otherwise derive from the first instance's
-    # model config torch_dtype (fallback bfloat16). Profile data under the
-    # resulting variant must exist at simulation time.
     _dtype_to_bits = {'float16': 16, 'bfloat16': 16, 'float32': 32, 'fp8': 8, 'int8': 8}
-    dtype = args.dtype
-    if dtype is None:
-        # Peek at cluster config to pick the default model's torch_dtype
-        with open(args.cluster_config, 'r') as _f:
-            _cluster_peek = json.load(_f)
-        _first_model = None
-        for _inst in _cluster_peek.get('instances', []):
-            if _inst.get('model_name'):
-                _first_model = _inst['model_name']
-                break
-        if _first_model is not None:
-            _cfg = get_config(_first_model)
-            _td = _cfg.get('torch_dtype')
-            if isinstance(_td, str) and _td in _dtype_to_bits:
-                dtype = _td
-        if dtype is None:
-            dtype = 'bfloat16'
-        logger.info("--dtype not set; using %s (from model config torch_dtype)", dtype)
-    fp = _dtype_to_bits[dtype]
     request_routing_policy=args.request_routing_policy
     expert_routing_policy=args.expert_routing_policy
-    enable_block_copy=args.enable_block_copy
-    enable_chunked_prefill=args.enable_chunked_prefill
-    enable_prefix_caching=args.enable_prefix_caching
     enable_prefix_sharing=args.enable_prefix_sharing
     prefix_storage=args.prefix_storage
-    enable_local_offloading=args.enable_local_offloading
-    enable_attn_offloading=args.enable_attn_offloading
-    enable_sub_batch_interleaving=args.enable_sub_batch_interleaving
-    if not enable_attn_offloading and enable_sub_batch_interleaving:
-        raise RuntimeError("Sub-batch interleaving requires attention offloading to be enabled")
-    prioritize_prefill=args.prioritize_prefill
     dataset=args.dataset
     output_file=args.output
     is_init = not args.skip_prefill
     num_req=args.num_reqs
     log_interval=args.log_interval
     network_backend = args.network_backend
-    kv_cache_dtype = args.kv_cache_dtype
+    raw_cluster_config = _load_cluster_config_for_overrides(args.cluster_config)
+    raw_instances = list(_iter_raw_instances(raw_cluster_config))
+    build_enable_local_offloading = args.enable_local_offloading or any(
+        inst.get("enable_local_offloading", False) for inst in raw_instances)
+    build_enable_attn_offloading = args.enable_attn_offloading or any(
+        inst.get("enable_attn_offloading", False) for inst in raw_instances)
     # ---------------------------------- Extract cluster config -----------------------------------
-    cluster = build_cluster_config(astra_sim, args.cluster_config, args.enable_local_offloading, args.enable_attn_offloading)
+    cluster = build_cluster_config(
+        astra_sim, args.cluster_config, build_enable_local_offloading, build_enable_attn_offloading,
+        inputs_root=run_paths.inputs_root)
     num_nodes = cluster["num_nodes"]
     num_instances = cluster["num_instances"]
     instances = cluster["instances"]
@@ -230,16 +347,19 @@ def main():
     power_modeling = cluster["power_modeling"]
     power_configs = cluster["power_configs"]
     pim_models = cluster["pim_models"]
+    instance_runtime_configs = _build_instance_runtime_configs(instances, args, _dtype_to_bits)
+    any_prefix_caching = any(cfg["enable_prefix_caching"] for cfg in instance_runtime_configs)
     # ----------------------------------------- Set config -----------------------------------------
     # Automatic network, memory configuration
     # If you want to set more specific information such as latency, look at config.py and each json file
     simulator_prefix = []
     if network_backend == 'analytical':
-        network=os.path.join(astra_sim, "inputs/network/network.yml")
+        network=run_paths.network_config
         binary=os.path.join(astra_sim, "build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra")
     elif network_backend == 'ns3':
-        network=os.path.join(astra_sim, "extern/network_backend/ns-3/scratch/config/config.txt")
+        network=_prepare_ns3_config(astra_sim, run_paths)
         binary=os.path.join(astra_sim, "extern/network_backend/ns-3/build/scratch/ns3.42-AstraSimNetwork-default")
+<<<<<<< HEAD
         # make output files
         output_dir = os.path.join(astra_sim, "extern/network_backend/ns-3/scratch/output")
         os.makedirs(output_dir, exist_ok=True)
@@ -253,6 +373,12 @@ def main():
         raise NotImplementedError("Only analytical, ns3, and htsim-shim network backends are supported")
     memory=os.path.join(astra_sim, 'inputs/memory/memory_expansion.json')
     system=os.path.join(astra_sim, "inputs/system/system.json")
+=======
+    else:
+        raise NotImplementedError("Only analytical and ns3 network backend are supported")
+    memory=run_paths.memory_config
+    system=run_paths.system_config
+>>>>>>> upstream/main
     # ------------------------------------- Prepare simulation -------------------------------------
     # Need to extract each instance's memory accessability 
     node2inst_mapping = defaultdict(list)
@@ -271,19 +397,39 @@ def main():
     elif prefix_storage == "CXL":
         pool_device = Device.CXL
 
-    if enable_prefix_caching and enable_prefix_sharing and prefix_storage != 'None':
+    if any_prefix_caching and enable_prefix_sharing and prefix_storage != 'None':
         num_prefix_pool = num_nodes
         # make prefix pool objects based on num_prefix_pool
         prefix_pools = []
+
+        def _pool_kv_bytes_per_token(inst_ids):
+            """KV bytes per token for a shared pool."""
+            kv_shapes = {
+                (
+                    instances[i]["model_name"],
+                    instance_runtime_configs[i]["fp"],
+                    instance_runtime_configs[i]["kv_cache_dtype"],
+                )
+                for i in inst_ids
+            }
+            if len(kv_shapes) > 1:
+                raise RuntimeError(
+                    "Shared prefix pool requires instances to share model, "
+                    f"dtype, and kv_cache_dtype; got {kv_shapes}"
+                )
+            model = instances[inst_ids[0]]['model_name']
+            cfg = instance_runtime_configs[inst_ids[0]]
+            return full_cluster_kv_bytes_per_token(model, cfg["fp"], cfg["kv_cache_dtype"])
+
         if prefix_storage == 'CPU':
             for i in range(num_prefix_pool):
                 if cpu_mem_size[i] > 0:
                     new_prefix_pool = RadixCache(
                                                 node_id=0,
-                                                device=prefix_storage, 
+                                                device=prefix_storage,
                                                 page_size=256,
                                                 capacity = cpu_mem_size[i] * GB_TO_BYTE,
-                                                kv_size=131072,
+                                                kv_size=_pool_kv_bytes_per_token(node2inst_mapping[i]),
                                                 enable_kv_cache_events=True)
                     prefix_pools.append(new_prefix_pool)
                 else:
@@ -295,10 +441,10 @@ def main():
             if cluster["cxl_mem_size"] > 0:
                 new_prefix_pool = RadixCache(
                                             node_id=None,
-                                            device=prefix_storage, 
+                                            device=prefix_storage,
                                             page_size=1,
-                                            capacity = cluster["cxl_mem_size"] * GB_TO_BYTE, 
-                                            kv_size=131072,
+                                            capacity = cluster["cxl_mem_size"] * GB_TO_BYTE,
+                                            kv_size=_pool_kv_bytes_per_token(list(range(num_instances))),
                                             enable_kv_cache_events=True)
                 prefix_pools.append(new_prefix_pool)
                 # This means every instance shares the same universal prefix pool (maybe fixed later)
@@ -320,16 +466,21 @@ def main():
         
         # Make scheduler for each instance
 
+        inst_cfg = instance_runtime_configs[instance_id]
+
         schedulers.append(Scheduler(
-            instance["model_name"], instance["node_id"], instance_id, max_num_seqs, max_num_batched_tokens,
+            instance["model_name"], instance["node_id"], instance_id,
+            inst_cfg["max_num_seqs"], inst_cfg["max_num_batched_tokens"],
             instance["num_npus"], instance["tp_size"], instance["pp_size"],
             instance["npu_mem"]["mem_size"], cpu_mem_size[instance["node_id"]],
-            inst2npu_mapping[instance_id], instance["pd_type"], fp, block_size, num_req,
-            prioritize_prefill, enable_prefix_caching, enable_prefix_sharing, prefix_pool, pool_device, enable_chunked_prefill,
-            long_prefill_token_threshold,
+            inst2npu_mapping[instance_id], instance["pd_type"],
+            inst_cfg["fp"], inst_cfg["block_size"], num_req,
+            inst_cfg["prioritize_prefill"], inst_cfg["enable_prefix_caching"],
+            enable_prefix_sharing, prefix_pool, pool_device, inst_cfg["enable_chunked_prefill"],
+            inst_cfg["long_prefill_token_threshold"],
             cxl_mem,
             ep_size=instance.get("ep_total", 1),
-            kv_cache_dtype=kv_cache_dtype,
+            kv_cache_dtype=inst_cfg["kv_cache_dtype"],
         ))
 
     # Controller for astra-sim process communication
@@ -343,7 +494,7 @@ def main():
         power_model = None
     # Load requests into router (routed in real-time during simulation)
     if dataset != None:
-        router.load_requests(dataset, enable_prefix_caching=enable_prefix_caching, is_init=is_init)
+        router.load_requests(dataset, enable_prefix_caching=any_prefix_caching, is_init=is_init)
     else:
         # Manually adding request (legacy: route all upfront)
         for i in range(16):
@@ -381,21 +532,31 @@ def main():
         event_time = first_arival_time
     else:
         event_time = INTERVAL
-    generate_event(int(event_time))
+    generate_event(int(event_time), inputs_root=run_paths.inputs_root)
     # Make Chakra Grapth
-    generate_graph(None, None, total_npu, event=True)
+    generate_graph(None, None, total_npu, event=True, inputs_root=run_paths.inputs_root,
+                   cleanup_trace=args.cleanup_inputs)
     # set first workload file
-    workload = get_workload(None, None, event=True)
+    workload = get_workload(None, None, event=True, inputs_root=run_paths.inputs_root)
     # run subprocess
+<<<<<<< HEAD
     args = [binary] + simulator_prefix + ["--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
+=======
+    astra_args = [binary, "--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
+>>>>>>> upstream/main
     if start_npu_ids != "":
-        args.append("--start-npu-ids="+start_npu_ids)
+        astra_args.append("--start-npu-ids="+start_npu_ids)
     if end_npu_ids != "":
-        args.append("--end-npu-ids="+end_npu_ids)
+        astra_args.append("--end-npu-ids="+end_npu_ids)
     if network_backend == 'ns3':
+<<<<<<< HEAD
         args.append("--logical-topology-configuration="+astra_sim+"/inputs/logical_topology/logical_8nodes_1D.json")
     stderr_target = open(os.path.join(astra_sim, "ns3.stderr.log"), "w") if network_backend == 'ns3' else subprocess.PIPE
     p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_target, universal_newlines=True)
+=======
+        astra_args.append("--logical-topology-configuration="+astra_sim+"/inputs/logical_topology/logical_8nodes_1D.json")
+    p = subprocess.Popen(astra_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+>>>>>>> upstream/main
 
     # DP group synchronization: defer trace generation until all members have scheduled
     # dp_groups maps dp_group_name -> list of instance_ids
@@ -512,24 +673,36 @@ def main():
                     for inst_id in dp_groups[dg]:
                         batch, nid = dp_pending[dg][inst_id]
                         inst = instances[inst_id]
+                        inst_cfg = instance_runtime_configs[inst_id]
                         generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
                                        inst["local_ep"], inst["ep_total"], inst["pd_type"],
-                                       nid, inst_id, max_num_batched_tokens, max_num_seqs, placement[inst_id], block_mode_on[inst_id],
-                                       expert_routing_policy, enable_prefix_caching, enable_attn_offloading,
+                                       nid, inst_id,
+                                       inst_cfg["max_num_batched_tokens"], inst_cfg["max_num_seqs"],
+                                       placement[inst_id], block_mode_on[inst_id],
+                                       expert_routing_policy, inst_cfg["enable_prefix_caching"],
+                                       inst_cfg["enable_attn_offloading"],
                                        power_model, pim_models[nid],
-                                       enable_sub_batch_interleaving, fp, dtype=dtype, kv_cache_dtype=kv_cache_dtype,
+                                       inst_cfg["enable_sub_batch_interleaving"], inst_cfg["fp"],
+                                       dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                        tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
-                                       dp_sum_total_len=sum_total_len, enable_block_copy=enable_block_copy)
+                                       dp_sum_total_len=sum_total_len,
+                                       enable_block_copy=inst_cfg["enable_block_copy"],
+                                       inputs_root=run_paths.inputs_root)
                         generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
-                                       inst_id, inst2npu_mapping[inst_id], enable_local_offloading,
-                                       workload_name=dp_workload_name)
+                                       inst_id, inst2npu_mapping[inst_id],
+                                       inst_cfg["enable_local_offloading"],
+                                       workload_name=dp_workload_name,
+                                       inputs_root=run_paths.inputs_root,
+                                       cleanup_trace=args.cleanup_inputs)
                         if inst_id != instance_id:
                             dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
-                                                                    workload_name=dp_workload_name)
+                                                                    workload_name=dp_workload_name,
+                                                                    inputs_root=run_paths.inputs_root)
 
                     dp_pending[dg].clear()
                     workload = get_workload(dummy, instances[instance_id]["hardware"], instance_id,
-                                            workload_name=dp_workload_name)
+                                            workload_name=dp_workload_name,
+                                            inputs_root=run_paths.inputs_root)
                     controller.write_flush(p, workload)
                     responded = True
                 else:
@@ -567,24 +740,36 @@ def main():
                         for inst_id in dp_groups[dg]:
                             batch, nid = dp_pending[dg][inst_id]
                             inst = instances[inst_id]
+                            inst_cfg = instance_runtime_configs[inst_id]
                             generate_trace(batch, inst["hardware"], inst["tp_size"], inst["pp_size"],
                                            inst["local_ep"], inst["ep_total"], inst["pd_type"],
-                                           nid, inst_id, max_num_batched_tokens, max_num_seqs, placement[inst_id], block_mode_on[inst_id],
-                                           expert_routing_policy, enable_prefix_caching, enable_attn_offloading,
+                                           nid, inst_id,
+                                           inst_cfg["max_num_batched_tokens"], inst_cfg["max_num_seqs"],
+                                           placement[inst_id], block_mode_on[inst_id],
+                                           expert_routing_policy, inst_cfg["enable_prefix_caching"],
+                                           inst_cfg["enable_attn_offloading"],
                                            power_model, pim_models[nid],
-                                           enable_sub_batch_interleaving, fp, dtype=dtype, kv_cache_dtype=kv_cache_dtype,
+                                           inst_cfg["enable_sub_batch_interleaving"], inst_cfg["fp"],
+                                           dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
                                            tp_dim=inst.get("tp_dim"), ep_dim=inst.get("ep_dim"),
-                                           dp_sum_total_len=sum_total_len, enable_block_copy=enable_block_copy)
+                                           dp_sum_total_len=sum_total_len,
+                                           enable_block_copy=inst_cfg["enable_block_copy"],
+                                           inputs_root=run_paths.inputs_root)
                             generate_graph(batch, inst["hardware"], inst["num_npus"], nid,
-                                           inst_id, inst2npu_mapping[inst_id], enable_local_offloading,
-                                           workload_name=dp_workload_name)
+                                           inst_id, inst2npu_mapping[inst_id],
+                                           inst_cfg["enable_local_offloading"],
+                                           workload_name=dp_workload_name,
+                                           inputs_root=run_paths.inputs_root,
+                                           cleanup_trace=args.cleanup_inputs)
                             if inst_id != instance_id:
                                 dp_ready_workloads[inst_id] = get_workload(batch, inst["hardware"], inst_id,
-                                                                        workload_name=dp_workload_name)
+                                                                        workload_name=dp_workload_name,
+                                                                        inputs_root=run_paths.inputs_root)
 
                         dp_pending[dg].clear()
                         workload = get_workload(new_req, instance["hardware"], instance_id,
-                                                workload_name=dp_workload_name)
+                                                workload_name=dp_workload_name,
+                                                inputs_root=run_paths.inputs_root)
                         controller.write_flush(p, workload)
                     else:
                         # Waiting for other DP members — send pass
@@ -592,20 +777,32 @@ def main():
                         responded = True
                 else:
                     # Independent instance: generate trace immediately
+                    inst_cfg = instance_runtime_configs[instance_id]
                     generate_trace(new_req, instance["hardware"], instance["tp_size"], instance["pp_size"],
                                    instance["local_ep"], instance["ep_total"],
                                    instance["pd_type"],
-                                   node_id, instance_id, max_num_batched_tokens, max_num_seqs, placement[instance_id], block_mode_on[instance_id],
-                                   expert_routing_policy, enable_prefix_caching, enable_attn_offloading, power_model, pim_models[node_id],
-                                   enable_sub_batch_interleaving, fp, dtype=dtype, kv_cache_dtype=kv_cache_dtype,
-                                   enable_block_copy=enable_block_copy)
+                                   node_id, instance_id,
+                                   inst_cfg["max_num_batched_tokens"], inst_cfg["max_num_seqs"],
+                                   placement[instance_id], block_mode_on[instance_id],
+                                   expert_routing_policy, inst_cfg["enable_prefix_caching"],
+                                   inst_cfg["enable_attn_offloading"], power_model, pim_models[node_id],
+                                   inst_cfg["enable_sub_batch_interleaving"], inst_cfg["fp"],
+                                   dtype=inst_cfg["dtype"], kv_cache_dtype=inst_cfg["kv_cache_dtype"],
+                                   tp_dim=instance["tp_dim"], ep_dim=instance["ep_dim"],
+                                   enable_block_copy=inst_cfg["enable_block_copy"],
+                                   inputs_root=run_paths.inputs_root)
                     generate_graph(new_req, instance["hardware"], instance["num_npus"], node_id,
-                                   instance_id, inst2npu_mapping[instance_id], enable_local_offloading)
-                    workload = get_workload(new_req, instance["hardware"], instance_id)
+                                   instance_id, inst2npu_mapping[instance_id],
+                                   inst_cfg["enable_local_offloading"],
+                                   inputs_root=run_paths.inputs_root,
+                                   cleanup_trace=args.cleanup_inputs)
+                    workload = get_workload(new_req, instance["hardware"], instance_id,
+                                            inputs_root=run_paths.inputs_root)
                     controller.write_flush(p, workload)
             elif new_req is not None:
                 # Non-first NPU: pick up existing batch workload
-                workload = get_workload(new_req, instances[instance_id]["hardware"], instance_id)
+                workload = get_workload(new_req, instances[instance_id]["hardware"], instance_id,
+                                        inputs_root=run_paths.inputs_root)
                 controller.write_flush(p, workload)
 
         # check time to store throughput (only print on start NPU to avoid transient states)
@@ -646,7 +843,7 @@ def main():
                     f"Each NPU Memory Usage {npu_used_mb:.2f} MB "
                     f"({npu_util:.3f} % Used)"
                 )
-                if enable_prefix_caching:
+                if schedulers[inst_id].enable_prefix_caching:
                     line += schedulers[inst_id].memory.npu_prefix_cache.format_prefix_info()
                 print_markup(line)
 
@@ -656,8 +853,8 @@ def main():
                 for i, (node_id, inst_ids) in enumerate(node2inst_mapping.items()):
                     node_cpu_usage = 0
                     inst_usage = []
-                    if enable_prefix_sharing and prefix_storage == "CPU":
-                        node_cpu_usage = (prefix_pools[node_id].total_size() * 131072)
+                    if any_prefix_caching and enable_prefix_sharing and prefix_storage == "CPU":
+                        node_cpu_usage = prefix_pools[node_id].total_size() * prefix_pools[node_id].kv_size
                     else:
                         for inst_id in inst_ids:
                             inst_cpu_usage = schedulers[inst_id].memory.cpu_used
@@ -672,10 +869,10 @@ def main():
                         f"Total CPU Memory Usage {node_cpu_usage/MB_TO_BYTE:.2f} MB, "
                         f"{cpu_util:.3f} % Used "
                     )
-                    if enable_prefix_caching and enable_prefix_sharing and prefix_storage == "CPU":
+                    if any_prefix_caching and enable_prefix_sharing and prefix_storage == "CPU":
                         line += prefix_pools[node_id].format_prefix_info()
 
-                    if (enable_prefix_sharing and prefix_storage == "CPU") or (len(inst_ids) == 1):
+                    if (any_prefix_caching and enable_prefix_sharing and prefix_storage == "CPU") or (len(inst_ids) == 1):
                         print_markup(line)
                     else:
                         parts = []
@@ -685,13 +882,13 @@ def main():
                         print_markup(line + "(" + ", ".join(parts) + ")")
 
             ######### Per CXL Metrics #########
-            if prefix_storage == "CXL":
+            if any_prefix_caching and prefix_storage == "CXL":
                 if enable_prefix_sharing:
                     num_prefix_pool = len(prefix_pools)
-                    for i, cxl_id, cxl_pool in enumerate(prefix_pools):
-                        cxl_usage = (cxl_pool.total_size() * 131072)
+                    for cxl_id, cxl_pool in enumerate(prefix_pools):
+                        cxl_usage = cxl_pool.total_size() * cxl_pool.kv_size
                         cxl_util = cxl_usage / cxl_pool.capacity
-                        if not power_modeling and i == num_prefix_pool - 1:
+                        if not power_modeling and cxl_id == num_prefix_pool - 1:
                             tree_indent = '└─'
                         print_markup(
                             f"{log_indent+tree_indent}CXL\\[{cxl_id}]: "
@@ -699,17 +896,24 @@ def main():
                             f"{cxl_usage/MB_TO_BYTE:.2f}MB, {cxl_util:.3f} % Used"
                         )
                 else:
-                    # else only one instance could explictly use CXL
-                    inst_id = 0
-                    cxl_usage = (schedulers[inst_id].memory.second_tier_prefix_cache.total_size() * 131072)
-                    cxl_util = cxl_usage / schedulers[inst_id].memory.second_tier_prefix_cache.capacity
-                    if not power_modeling:
-                        tree_indent = '└─'
-                    print_markup(
-                        f"{log_indent+tree_indent}CXL\\[0]: "
-                        f"Total CXL Device Memory Usage {cxl_usage / MB_TO_BYTE:.2f} MB, "
-                        f"{cxl_util:.3f} % Used"
-                    )
+                    enabled_inst_ids = [
+                        inst_id for inst_id, sched in enumerate(schedulers)
+                        if sched.enable_prefix_caching
+                    ]
+                    for pos, inst_id in enumerate(enabled_inst_ids):
+                        second_tier = getattr(
+                            schedulers[inst_id].memory, "second_tier_prefix_cache", None)
+                        if second_tier is None:
+                            continue
+                        cxl_usage = second_tier.total_size() * second_tier.kv_size
+                        cxl_util = cxl_usage / second_tier.capacity
+                        if not power_modeling and pos == len(enabled_inst_ids) - 1:
+                            tree_indent = '└─'
+                        print_markup(
+                            f"{log_indent+tree_indent}CXL\\[0]/Instance\\[{inst_id}]: "
+                            f"Total CXL Device Memory Usage {cxl_usage / MB_TO_BYTE:.2f} MB, "
+                            f"{cxl_util:.3f} % Used"
+                        )
 
             ######### Power Modeling #########
             if power_modeling:
@@ -784,8 +988,10 @@ def main():
     total_requested_tokens = 0
     total_npu_hit_tokens = 0
     total_cpu_hit_tokens = 0
-    if enable_prefix_caching:
+    if any_prefix_caching:
         for i in range(num_instances):
+            if not schedulers[i].enable_prefix_caching:
+                continue
             (temp_npu_a, temp_npu_b), (temp_cpu_a, temp_cpu_b) = schedulers[i].memory.return_prefix_info()
             if (not enable_prefix_sharing) and (prefix_storage != "None") and (temp_npu_a != temp_cpu_a):
                 raise RuntimeError(f"Instance[{i}] prefix caching requested tokens mismatch between NPU ({temp_npu_a}) and CPU ({temp_cpu_a})")
@@ -816,7 +1022,7 @@ def main():
     print_markup(f"Total token throughput (tok/s):                                     {(total_prompt + total_gen)/total_latency:.2f}")
     print_markup(f"Throughput per {1/RATIO} sec (\\[prompt_throughput], \\[gen_throughput]): {throughput}")
     print_rule()
-    if enable_prefix_caching:
+    if any_prefix_caching:
         print_rule("[sim.tagline]Prefix Caching Results[/]")
         print_markup(f"Total requested prompt tokens:                                      {total_requested_tokens}")
         print_markup(f"NPU prefix hit prompt tokens:                                       {total_npu_hit_tokens}")
@@ -854,6 +1060,9 @@ def main():
         print(f"Saving each request's information to output file: {output_file}")
         for i in range(num_instances):
             schedulers[i].save_output(output_file, is_append=False if i == 0 else True)
+
+    if args.cleanup_inputs:
+        _cleanup_inputs_root(run_paths, logger)
     
 
 if __name__ == "__main__": 

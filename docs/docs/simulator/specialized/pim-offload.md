@@ -164,10 +164,10 @@ to NPU attention for prefill-heavy phases.
 1. **PIM offload is per-node.** `cpu_mem.pim_config` lives on the
    node, not the instance. Multiple instances on the same node share
    the same PIM device.
-2. **`--enable-attn-offloading` is a global flag**, not per-instance.
-   You can't offload attention for some instances but not others in
-   the same simulation. (If you need that, run two simulations and
-   compare.)
+2. **`--enable-attn-offloading` is the CLI default.** Individual
+   instances can override it with `enable_attn_offloading` in the
+   cluster config, but any node that uses PIM offload still needs a
+   `cpu_mem.pim_config`.
 3. **The PIM CSV bundle isn't a thing.** Unlike NPU, PIM attention
    latency is computed analytically from the DRAMSim3 parameters
    plus `pim_model.py`'s arithmetic. Profiling a real PIM device is

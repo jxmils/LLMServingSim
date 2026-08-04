@@ -121,12 +121,28 @@ class PIMModel:
         return self.estimate_with_linear(n_head, kv_head, head_dim, L, channel_split) # ns
     
     def estimate_with_linear(self, n_head, kv_head, head_dim, L, channel_split=1):
-        # this result is for Llama3.1-8B (n_head=32, kv_head=8, head_dim=128)
-        if n_head != 32 or kv_head != 8 or head_dim != 128:
-            raise NotImplementedError("Only Llama3.1-8B (n_head=32, kv_head=8, head_dim=128) is supported in the current pim latency model.")
-            
+        """Estimate PIM attention latency using linear model.
+
+        Supports arbitrary model architectures by scaling coefficients
+        from the Llama-3.1-8B baseline (n_head=32, kv_head=8, head_dim=128).
+
+        Scaling formula:
+            slope scales with (n_head / kv_head) — GQA ratio
+            intercept scales with (n_head * head_dim) — total KV cache size
+
+        Args:
+            n_head: Number of attention heads
+            kv_head: Number of key-value heads (GQA)
+            head_dim: Dimension per head
+            L: Sequence length
+            channel_split: Memory channel parallelism
+
+        Returns:
+            Latency in nanoseconds
+        """
+        # Baseline coefficients (Llama-3.1-8B: n_head=32, kv_head=8, head_dim=128)
         attn_model = {
-            "LPDDR4X_2GB_4266_pim":{
+            "LPDDR4X_2GB_4266_pim": {
                 "slope": 432.4458,
                 "intercept": 33918.1734
             },
@@ -143,7 +159,28 @@ class PIMModel:
                 "intercept": 14513.5015
             },
         }
-        slope = attn_model[self.spec_name]["slope"]
-        intercept = attn_model[self.spec_name]["intercept"]
+
+        if self.spec_name not in attn_model:
+            raise ValueError(f"Unknown PIM spec: {self.spec_name}")
+
+        base = attn_model[self.spec_name]
+        base_slope = base["slope"]
+        base_intercept = base["intercept"]
+
+        # Baseline model parameters
+        BASE_N_HEAD = 32
+        BASE_KV_HEAD = 8
+        BASE_HEAD_DIM = 128
+
+        # Scale coefficients based on model architecture
+        # Slope scales with GQA ratio (more heads = more compute per token)
+        gqa_ratio = (n_head / kv_head) / (BASE_N_HEAD / BASE_KV_HEAD)
+
+        # Intercept scales with total KV cache size (more heads * dim = more data to load)
+        kv_scale = (n_head * head_dim) / (BASE_N_HEAD * BASE_HEAD_DIM)
+
+        slope = base_slope * gqa_ratio
+        intercept = base_intercept * kv_scale
+
         return (slope * L + intercept) / channel_split  # float, ns
 

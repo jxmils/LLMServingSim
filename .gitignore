@@ -25,3 +25,11 @@ bench/results/
 .copilot/
 .aider*
 .continue/
+
+# Local environments and generated files
+.venv-sim/
+LLMServingSim/
+logs/
+compile_htsim.log
+ns3_hang_bt.txt
+profiler/perf/H100/

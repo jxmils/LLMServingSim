@@ -14,12 +14,13 @@ class Device(Enum):
     CXL = 3
 
 class MemoryModel():
-    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, kv_cache_dtype='auto'):
+    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto'):
         self.model = model
         self.node_id = node_id
         self.instance_id = instance_id
         self.num_npus = num_npus
         self.tp_size = tp_size
+        self.pp_size = pp_size
         self.ep_size = ep_size
         self.npu_mem = npu_mem * GB_TO_BYTE # GB -> Byte
         self.cpu_mem = cpu_mem * GB_TO_BYTE # GB -> Byte
@@ -93,15 +94,24 @@ class MemoryModel():
         self._cpu_cache_hashtolen = {}
         self._bytes_per_token = self.get_kv(1)  # bytes per token for kv cache
     def get_weight(self):
-        """Total per-GPU model weight in bytes."""
+        """Per-GPU model weight in bytes.
+
+        Conservative upper bound across PP ranks: assumes a single rank
+        holds embedding + final_layernorm + lm_head along with its share
+        of transformer blocks (n_layer // pp_size). In real PP these
+        non-block weights live on the first/last rank only, so middle
+        ranks are lighter — but using the heaviest-rank value here keeps
+        the `weight > npu_mem` check safe.
+        """
         tp = self.tp_size
+        pp = max(self.pp_size, 1)
         ep = self.ep_size
         fp = self.fp
         weight = 0
 
         _, embedding, _ = calculate_sizes(self.model, 'embedding', 1, parallel=tp, fp=fp)
         weight += embedding
-        weight += self._get_weight_per_block(tp, ep, fp) * self.n_layer
+        weight += self._get_weight_per_block(tp, ep, fp) * (self.n_layer // pp)
         _, ln_f, _ = calculate_sizes(self.model, 'final_layernorm', 1, parallel=tp, fp=fp)
         weight += ln_f
         _, lm_head, _ = calculate_sizes(self.model, 'lm_head', 1, parallel=tp, fp=fp)
@@ -162,7 +172,9 @@ class MemoryModel():
         for i in range(batch_len):
             req = batch_req[i]
             if req.evict or req.is_prefill():
-                # (decode + evict) or (prefill) should load all of KV caches
+                # Prefill and reloaded decode requests may allocate newly
+                # computed blocks. Existing evicted KV is reloaded separately
+                # by Scheduler.load_size.
                 hit = req.npu_cache_hit if self.enable_prefix_caching else 0
                 
                 if scheduled_tokens and req.id in scheduled_tokens:
@@ -348,9 +360,9 @@ class MemoryModel():
             return 0
         
         if device == Device.NPU:
-            return self.npu_prefix_cache.avail_size() * self._bytes_per_token
+            return self.npu_prefix_cache.avail_size()
         elif device == Device.CPU or device == Device.CXL:
-            return self.second_tier_prefix_cache.avail_size() * self._bytes_per_token
+            return self.second_tier_prefix_cache.avail_size()
         else:
             raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to get available size of prefix cache in unsupported device {device}")
     
@@ -360,7 +372,7 @@ class MemoryModel():
         if self.enable_prefix_caching:
             new_last_node = self.second_tier_prefix_cache.cache_unfinished_req(req, update=False) # do not update hit counts
             # should lock evicted kv cache in cpu
-            self.npu_prefix_cache.inc_lock_ref(new_last_node)
+            self.second_tier_prefix_cache.inc_lock_ref(new_last_node)
             req.cpu_last_node = new_last_node
             self.apply_kv_cache_events()
 
@@ -402,6 +414,7 @@ class MemoryModel():
             self.npu_prefix_cache.dec_lock_ref(req.npu_last_node)
             # print(f"[UNLOCK] req={req.id} unlock_prefix node_id={node.id} lock_ref_AFTER={node.lock_ref}")
             req.npu_last_node = None
+            req._prefix_locked = False
         elif device == Device.CPU and req.cpu_last_node is not None:
             self.second_tier_prefix_cache.dec_lock_ref(req.cpu_last_node)
             req.cpu_last_node = None
@@ -419,10 +432,12 @@ class MemoryModel():
             
             old_node = req.npu_last_node
             # print(f"[CACHE_UNFINISHED] req={req.id} old_node_id={old_node.id if old_node else None}(lock_ref={old_node.lock_ref if old_node else 'N/A'}) -> new_node_id={new_last_node.id}(lock_ref={new_last_node.lock_ref})")
-            self.npu_prefix_cache.dec_lock_ref(req.npu_last_node)
+            if old_node is not None and req._prefix_locked:
+                self.npu_prefix_cache.dec_lock_ref(old_node)
             self.npu_prefix_cache.inc_lock_ref(new_last_node)
             # print(f"[CACHE_UNFINISHED] req={req.id} AFTER: old_node_id={old_node.id}(lock_ref={old_node.lock_ref}) new_node_id={new_last_node.id}(lock_ref={new_last_node.lock_ref})")
             req.npu_last_node = new_last_node
+            req._prefix_locked = True
             if self.logger.isEnabledFor(logging.DEBUG):
                 # print(f"cache_unfinished_req of req {req.id}")
                 # print(f"===============NPU PREFIX CAHCE of Instance[{self.instance_id}]=================")
@@ -452,7 +467,9 @@ class MemoryModel():
                 # print(f"[CACHE_FINISHED] req={req.id} node_id={node.id if node else None} lock_ref={node.lock_ref if node else 'N/A'} (SKIPPED dec - not locked)")
             else:
                 # print(f"[CACHE_FINISHED] req={req.id} node_id={node.id if node else None} lock_ref_BEFORE={node.lock_ref if node else 'N/A'}")
-                self.npu_prefix_cache.dec_lock_ref(req.npu_last_node)
+                if node is not None:
+                    self.npu_prefix_cache.dec_lock_ref(node)
+                    req.npu_last_node = None
                 req._prefix_locked = False
             # node = req.npu_last_node
             # print(f"[CACHE_FINISHED] req={req.id} node_id={node.id if node else None} lock_ref_BEFORE={node.lock_ref if node else 'N/A'}")
@@ -475,17 +492,20 @@ class MemoryModel():
         self.apply_kv_cache_events()
 
     def evict_prefix_cache(self, bytes, device):
-        if not self.enable_prefix_caching and bytes <= 0:
+        if not self.enable_prefix_caching or bytes <= 0:
             return
-        # space_needed = ceil(bytes / _bytes_per_token)
-        space_needed = (bytes + self._bytes_per_token - 1) // self._bytes_per_token
 
         if device == Device.NPU:
-            self.npu_prefix_cache.evict(space_needed)
+            cache = self.npu_prefix_cache
         elif device == Device.CPU:
-            self.second_tier_prefix_cache.evict(space_needed)
+            cache = self.second_tier_prefix_cache
         else:
             raise RuntimeError(f"[MemoryModel] [node_id={self.node_id},inst={self.instance_id}] Trying to evict prefix cache to unsupported device {device}")
+
+        # Each cache instance carries its own bytes-per-token in kv_size:
+        # per-rank for NPU, full-cluster for the second-tier pool.
+        space_needed = (bytes + cache.kv_size - 1) // cache.kv_size
+        cache.evict(space_needed)
 
         self.apply_kv_cache_events()
 
@@ -589,20 +609,24 @@ class MemoryModel():
         # if npu_byte_free > 0:
         #     self.free(npu_byte_free, Device.NPU)
 
-        if not self.enable_prefix_sharing and self.prefix_storage is Device.CPU:
+        # Second-tier (CPU/CXL) prefix cache events.
+        if self.prefix_storage is None:
+            return
+
+        if self.prefix_storage is Device.CPU and not self.enable_prefix_sharing:
+            # Non-shared CPU second_tier: bridge events into the instance's
+            # cpu_used counter so allocations are bounded by cpu_mem.
             for ev in self.second_tier_prefix_cache.take_events():
                 if isinstance(ev, BlockStored):
                     tlen = len(ev.token_ids)
                     for h in ev.block_hashes:
-                        # self._cpu_cache_hashtolen[h] = tlen
                         if h in self._cpu_cache_hashtolen:
-                           self._cpu_cache_hashtolen[h][1] += 1
+                            self._cpu_cache_hashtolen[h][1] += 1
                         else:
-                           self._cpu_cache_hashtolen[h] = [tlen, 1]
+                            self._cpu_cache_hashtolen[h] = [tlen, 1]
                     cpu_byte_alloc += self.get_kv(tlen) * self.num_npus
                 elif isinstance(ev, BlockRemoved):
                     for h in ev.block_hashes:
-                        # tlen = self._cpu_cache_hashtolen.pop(h, 0)
                         if h in self._cpu_cache_hashtolen:
                             tlen = self._cpu_cache_hashtolen[h][0]
                             self._cpu_cache_hashtolen[h][1] -= 1
@@ -611,13 +635,17 @@ class MemoryModel():
                             cpu_byte_free += self.get_kv(tlen) * self.num_npus
                         else:
                             self.logger.warning(f"CPU prefix cache remove unknown block hash {h}")
-            
+
             if cpu_byte_free > 0:
                 self.free(cpu_byte_free, Device.CPU)
             if cpu_byte_alloc > 0:
-               self.allocate(cpu_byte_alloc, Device.CPU)
-            # if cpu_byte_free > 0:
-            #     self.free(cpu_byte_free, Device.CPU)
+                self.allocate(cpu_byte_alloc, Device.CPU)
+        else:
+            # Shared pool or CXL: the cache itself accounts via
+            # total_memory_usage (= kv_stored + total_size * kv_size),
+            # so no instance-side counter update is needed. Drain the
+            # queue to prevent it from growing unboundedly.
+            self.second_tier_prefix_cache.take_events()
 
     def return_prefix_info(self):
         if not self.enable_prefix_caching:
@@ -627,6 +655,26 @@ class MemoryModel():
         return (self.npu_prefix_cache.return_prefix_info(), self.second_tier_prefix_cache.return_prefix_info())
 
         
+def full_cluster_kv_bytes_per_token(model, fp, kv_cache_dtype='auto'):
+    """Bytes of KV cache per token aggregated over the full TP cluster.
+
+    Mirrors MemoryModel.get_kv(1) * num_npus but computes directly, avoiding
+    the per-rank floor-division roundoff. ``fp`` is the model weight dtype
+    in bits (16, 32, ...). ``kv_cache_dtype='fp8'`` forces 1 byte per element
+    for the KV cache regardless of weight dtype.
+    """
+    config = get_config(model)
+    n_embd = config['hidden_size']
+    n_head = config['num_attention_heads']
+    head_dim = config.get('head_dim', n_embd // n_head)
+    kv_head = config.get('num_key_value_heads', n_head)
+    kv_dim = kv_head * head_dim
+    n_layer = config['num_hidden_layers']
+    kv_fp = 1 if kv_cache_dtype == 'fp8' else fp // 8
+    # 2 (K + V) * kv_dim * n_layer * bytes_per_elem
+    return 2 * kv_dim * n_layer * kv_fp
+
+
 # calculate the per-rank input, weight, output size of each layer
 def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=1, fp=2):
     """Calculate input, weight, and output tensor sizes for a given layer.

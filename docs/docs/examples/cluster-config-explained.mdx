@@ -69,13 +69,15 @@ The file has three nested levels. We'll walk through them top-down.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `num_nodes` | int | Number of physical nodes in the cluster |
-| `link_bw` | float | Inter-node link bandwidth in **GB/s** |
-| `link_latency` | float | Inter-node link latency in **ns** |
+| `link_bw` | float or float[] | ASTRA-Sim topology link bandwidth in **GB/s** |
+| `link_latency` | float or float[] | ASTRA-Sim topology link latency in **ns** |
 | `nodes` | array | One entry per node (length must match `num_nodes`) |
 
 For multi-node setups (e.g., two boxes in a rack), set `num_nodes: 2`
-and add a second node entry. Inter-node communication uses
-`link_bw` / `link_latency`.
+and add a second node entry. `link_bw` / `link_latency` can be either:
+
+- a scalar, broadcast to every ASTRA-Sim topology dimension
+- an array, with one value per final `network.yml::npus_count` dimension
 
 **Optional top-level fields:**
 
@@ -204,7 +206,7 @@ the cluster config.
 
 ## Provided configs
 
-The repo ships 13 worked configs under `configs/cluster/`. Each
+The repo ships 15 worked configs under `configs/cluster/`. Each
 example in this section uses one of them:
 
 | Config | Used by |
@@ -212,12 +214,14 @@ example in this section uses one of them:
 | `single_node_single_instance.json` | [Tensor parallel](./parallelism/tensor-parallel) (with `tp_size=2`) |
 | `single_node_multi_instance.json` | [Multi-instance LOAD routing](./disaggregated/multi-instance) |
 | `single_node_pd_instance.json` | [Prefill/decode split](./disaggregated/prefill-decode-split) |
+| `single_node_pd_per_instance_config.json` | P/D split with per-instance runtime limits |
 | `single_node_moe_single_instance.json` | [Expert parallel](./parallelism/expert-parallel) |
 | `single_node_moe_dp_ep_instance.json` | [DP+EP MoE](./parallelism/dp-ep-moe) |
 | `single_node_cxl_instance.json` | [CXL memory tier](./memory-tiers/cxl-memory) |
 | `single_node_pim_instance.json` | [PIM attention offload](./disaggregated/pim-attention-offload) |
 | `single_node_power_instance.json` | [Power modeling](./advanced/power-modeling) |
 | `dual_node_multi_instance.json` | Multi-node setups |
+| `dual_node_moe_dp_ep_intra_inter_instance.json` | Two-node DP+EP MoE with per-dimension intra/inter `link_bw` / `link_latency` |
 | ... | ... |
 
 ## What's next

@@ -434,6 +434,8 @@ def print_input_config(args: Any) -> None:
             items.append((label, conv(getattr(args, attr))))
 
     add("cluster_config", "Cluster config", _na)
+    add("run_id", "Run ID", _na)
+    add("inputs_root", "ASTRA-Sim inputs root", _na)
     add("memory_config", "Memory config", _na)
     add("dataset", "Dataset", _na)
     add("num_req", "Num requests")

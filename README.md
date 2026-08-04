@@ -37,7 +37,7 @@ flags, and the full set of example workloads, see the
 
 **ISPASS 2026**  
 *LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure*  
-Jaehong Cho<sup>\*</sup>, Hyunmin Choi<sup>\*</sup>, Guseul Heo, Jongse Park (KAIST) [[Paper]]() (To Appear)  
+Jaehong Cho<sup>\*</sup>, Hyunmin Choi<sup>\*</sup>, Guseul Heo, Jongse Park (KAIST) [[Paper]](https://doi.org/10.1109/ISPASS69572.2026.00012)  
 <sup>\*</sup>Equal contribution  
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18879965.svg)](https://doi.org/10.5281/zenodo.18879965)
 
@@ -55,6 +55,15 @@ Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]]
 If you use LLMServingSim in your research, please cite:
 
 ```bibtex
+@INPROCEEDINGS{11527300,
+    author={Cho, Jaehong and Choi, Hyunmin and Heo, Guseul and Park, Jongse},
+    booktitle={2026 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS)}, 
+    title={{LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure}}, 
+    year={2026},
+    pages={1-14},
+    doi={10.1109/ISPASS69572.2026.00012}
+}
+
 @ARTICLE{11224567,
     author={Cho, Jaehong and Choi, Hyunmin and Park, Jongse},
     journal={IEEE Computer Architecture Letters},

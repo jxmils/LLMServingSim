@@ -34,6 +34,8 @@ class Request:
 
         # For prefix cache lock tracking
         self._prefix_locked = False
+        self._prefix_npu_stats_counted = False
+        self._prefix_storage_stats_counted = False
 
         # For agentic session tracking (informational, does not drive scheduling)
         self.session_id = None

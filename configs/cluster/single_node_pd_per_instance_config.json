@@ -1,0 +1,52 @@
+{
+    "num_nodes": 1,
+    "link_bw": 16,
+    "link_latency": 20000,
+    "nodes": [
+        {
+            "num_instances": 2,
+            "cpu_mem": {
+                "mem_size": 512,
+                "mem_bw": 256,
+                "mem_latency": 0
+            },
+            "instances": [
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "RTXPRO6000",
+                    "npu_mem": {
+                        "mem_size": 96,
+                        "mem_bw": 1597,
+                        "mem_latency": 0
+                    },
+                    "pd_type": "prefill",
+                    "tp_size": 1,
+                    "max_num_seqs": 32,
+                    "max_num_batched_tokens": 8192,
+                    "long_prefill_token_threshold": 2048,
+                    "enable_chunked_prefill": true,
+                    "block_size": 16,
+                    "dtype": "bfloat16",
+                    "kv_cache_dtype": "auto"
+                },
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "RTXPRO6000",
+                    "npu_mem": {
+                        "mem_size": 96,
+                        "mem_bw": 1597,
+                        "mem_latency": 0
+                    },
+                    "pd_type": "decode",
+                    "tp_size": 1,
+                    "max_num_seqs": 256,
+                    "max_num_batched_tokens": 256,
+                    "enable_chunked_prefill": true,
+                    "block_size": 16,
+                    "dtype": "bfloat16",
+                    "kv_cache_dtype": "auto"
+                }
+            ]
+        }
+    ]
+}

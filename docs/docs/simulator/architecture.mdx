@@ -163,10 +163,10 @@ Concretely:
 1. The Python scheduler decides which requests run this iteration and
    produces a `Batch`.
 2. `trace_generator` writes a per-layer text trace to
-   `astra-sim/inputs/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`.
+   `astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`.
 3. `graph_generator` shells out to the Chakra converter, producing a
    protobuf graph at
-   `astra-sim/inputs/workload/<hw>/<model>/instance_{i}_batch_{b}/llm.et`.
+   `astra-sim/inputs/runs/<run_id>/workload/<hw>/<model>/instance_{i}_batch_{b}/llm.et`.
 4. `controller.write_flush(process, "<workload-path>")` sends that
    path over stdin.
 5. ASTRA-Sim reads the `.et` file, executes the compute + comm graph,
