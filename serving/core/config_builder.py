@@ -149,7 +149,8 @@ def _resolve_dp_groups(all_instances):
 
 # parse cluster configuration from JSON file and build config file for astra-sim
 def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading=False, enable_attn_offloading=False):
-    cluster_config_path = f'../{cluster_config_path}' # move out from astra-sim folder
+    if not os.path.isabs(cluster_config_path):
+        cluster_config_path = os.path.join('..', cluster_config_path) # move out from astra-sim folder
     
     try:
         with open(cluster_config_path, 'r') as f:

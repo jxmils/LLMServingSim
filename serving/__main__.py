@@ -27,7 +27,10 @@ from serving.core.power_model import *
 from serving.core.logger import *
 import sys as flush
 
-from pyinstrument import Profiler
+try:
+    from pyinstrument import Profiler
+except ImportError:
+    Profiler = None
 
 
 def _pad_batch_to_max(batch, max_len):
@@ -149,8 +152,8 @@ def main():
                         help='logging verbosity: WARNING (minimal), INFO (per-iteration details), DEBUG (per-layer memory)')
     parser.add_argument('--kv-cache-dtype', type=str, choices=['auto', 'fp8'], default='auto',
                         help='KV cache data type: auto (use default profile.csv) or fp8 (use profile_fp8.csv, halves KV cache memory)')
-    parser.add_argument('--network-backend', type=str, choices=['analytical', 'ns3'], default='analytical',
-                        help='network simulation backend: analytical (fast, default) or ns3 (detailed, WIP)')
+    parser.add_argument('--network-backend', type=str, choices=['analytical', 'ns3', 'htsim-shim'], default='analytical',
+                        help='network simulation backend: analytical (fast, default), ns3 (detailed, WIP), or htsim-shim (ASTRA-compatible HTSim stub)')
 
     args = parser.parse_args()
     
@@ -230,6 +233,7 @@ def main():
     # ----------------------------------------- Set config -----------------------------------------
     # Automatic network, memory configuration
     # If you want to set more specific information such as latency, look at config.py and each json file
+    simulator_prefix = []
     if network_backend == 'analytical':
         network=os.path.join(astra_sim, "inputs/network/network.yml")
         binary=os.path.join(astra_sim, "build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra")
@@ -241,8 +245,12 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
         open(os.path.join(output_dir, "flow.txt"), "w").close()
         open(os.path.join(output_dir, "trace.txt"), "w").close()
+    elif network_backend == 'htsim-shim':
+        network=os.path.join(astra_sim, "inputs/network/network.yml")
+        binary=flush.executable
+        simulator_prefix=[os.path.join(cwd, "serving/core/htsim_astra_shim.py"), "--fixed-cycles=1234"]
     else:
-        raise NotImplementedError("Only analytical and ns3 network backend are supported")
+        raise NotImplementedError("Only analytical, ns3, and htsim-shim network backends are supported")
     memory=os.path.join(astra_sim, 'inputs/memory/memory_expansion.json')
     system=os.path.join(astra_sim, "inputs/system/system.json")
     # ------------------------------------- Prepare simulation -------------------------------------
@@ -379,14 +387,15 @@ def main():
     # set first workload file
     workload = get_workload(None, None, event=True)
     # run subprocess
-    args = [binary, "--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
+    args = [binary] + simulator_prefix + ["--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
     if start_npu_ids != "":
         args.append("--start-npu-ids="+start_npu_ids)
     if end_npu_ids != "":
         args.append("--end-npu-ids="+end_npu_ids)
     if network_backend == 'ns3':
         args.append("--logical-topology-configuration="+astra_sim+"/inputs/logical_topology/logical_8nodes_1D.json")
-    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    stderr_target = open(os.path.join(astra_sim, "ns3.stderr.log"), "w") if network_backend == 'ns3' else subprocess.PIPE
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_target, universal_newlines=True)
 
     # DP group synchronization: defer trace generation until all members have scheduled
     # dp_groups maps dp_group_name -> list of instance_ids
