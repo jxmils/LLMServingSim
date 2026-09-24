@@ -69,7 +69,8 @@ def test_backend_args_check_rank_count(tmp_path):
     spec = FabricSpec.load(_write(tmp_path, "f.json", HYBRID))
     args = build_backend_args("/bin/true", spec, "/w/llm", "/s.json", str(net),
                               mem, start_npu_ids="0", end_npu_ids="63")
-    assert args[:3] == ["/bin/true", "--serving", "--chakra-send-admission=serialized"]
+    assert args[:4] == ["/bin/true", "--serving", "--chakra-send-admission=serialized",
+                        "--chakra-runtime-unit=ns"]
     panel_mem = str(tmp_path / "memory_expansion.panel.json")
     assert "--remote-memory-configuration=" + panel_mem in args
     assert not any(a.startswith("--memory-configuration=") for a in args)
@@ -117,6 +118,45 @@ def test_file_keys_resolve_relative_and_env(tmp_path, monkeypatch):
     with pytest.raises(FileNotFoundError, match="topo file not found"):
         FabricSpec.load(_write(tmp_path, "h.json", {
             "spec_version": 1, "nodes": 8, "topo": "missing.topo"}))
+
+
+def test_et_transcode_remaps_node_types_once(tmp_path):
+    from chakra.schema.protobuf.et_def_pb2 import GlobalMetadata, Node
+    from chakra.src.third_party.utils.protolib import decodeMessage, encodeMessage
+    from serving.core.panel_backend import transcode_et_for_panel
+
+    def write(path, types):
+        with open(path, "wb") as f:
+            encodeMessage(f, GlobalMetadata(version="0.0.4"))
+            for i, t in enumerate(types):
+                n = Node(id=i, name=f"n{i}")
+                n.type = t
+                encodeMessage(f, n)
+
+    def read(path):
+        with open(path, "rb") as f:
+            gm = GlobalMetadata(); decodeMessage(f, gm)
+            out = []
+            while True:
+                n = Node()
+                if not decodeMessage(f, n):
+                    break
+                out.append(n.type)
+            return gm, out
+
+    p = str(tmp_path / "llm.0.et")
+    write(p, [2, 5, 8, 6, 7, 3])          # MEM_LOAD COMP COLL SEND RECV MEM_STORE (frontend)
+    assert transcode_et_for_panel(p) is True
+    gm, types = read(p)
+    assert types == [2, 4, 7, 5, 6, 3]     # panel numbering
+    assert any(a.name == "panel_backend_schema" for a in gm.attr)
+    assert transcode_et_for_panel(p) is False   # tagged: left alone
+    assert read(p)[1] == [2, 4, 7, 5, 6, 3]
+
+    pim = str(tmp_path / "llm.1.et")
+    write(pim, [2, 4, 3])                  # PIM_COMP_NODE in the frontend schema
+    with pytest.raises(ValueError, match="PIM_COMP_NODE"):
+        transcode_et_for_panel(pim)
 
 
 def test_resolve_binary_requires_a_path(monkeypatch):

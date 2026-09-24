@@ -120,6 +120,13 @@ def _cache_store(key, paths):
 # effect — see AGENTS.md.
 _LLMConverter = None
 
+# Optional per-file hook applied to every freshly converted `llm.*.et`
+# before it is cached or handed to the backend. The panel backend installs
+# a schema transcode here (serving/core/panel_backend.py); the analytical
+# and ns-3 backends leave it None. It must be idempotent: on a DP-shared
+# workload folder it also sees files written by earlier members.
+ET_POSTPROCESS = None
+
 
 def _get_llm_converter():
     """Import LLMConverter on first use and cache the class.
@@ -182,6 +189,10 @@ def generate_graph(batch, hardware, num_npus, node_id=0, instance_id=0, npu_offs
         trace_path, output_path, num_npus, npu_offset, enable_local_offloading,
     )
     converter.convert_rows(trace.header_line, indexed_cols(trace.rows))
+
+    if ET_POSTPROCESS is not None:
+        for et in sorted(_et_names(workload_dir)):
+            ET_POSTPROCESS(et)
 
     _cache_store(cache_key, _et_names(workload_dir) - before)
     return

@@ -31,6 +31,7 @@ from serving.core.panel_backend import (
     FabricSpec,
     build_backend_args as build_panel_backend_args,
     resolve_binary as resolve_panel_binary,
+    transcode_et_for_panel,
 )
 import sys as flush
 
@@ -464,6 +465,10 @@ def main():
         fabric_spec_path = args.fabric_spec if os.path.isabs(args.fabric_spec) \
             else os.path.join(cwd, args.fabric_spec)
         fabric_spec=FabricSpec.load(fabric_spec_path)
+        # Every graph handed to the panel backend is rewritten into its
+        # Chakra node numbering right after conversion (see panel_backend).
+        import serving.core.graph_generator as _graph_generator
+        _graph_generator.ET_POSTPROCESS = transcode_et_for_panel
     elif network_backend == 'htsim-shim':
         # Protocol stub: the frontend's own interpreter runs the shim in place of
         # an ASTRA-Sim binary. Returns fixed cycles; never use for performance runs.

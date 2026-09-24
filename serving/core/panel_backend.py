@@ -219,8 +219,11 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
     if num_nodes <= 0 or logical % num_nodes != 0:
         raise ValueError(f"num_nodes={num_nodes} does not divide the {logical} logical NPUs")
     panel_memory = translate_memory_config(memory_config, num_nodes, logical // num_nodes)
+    # The frontend's trace_generator writes COMP durations in nanoseconds
+    # (profiler time_us * 1000); the backend's default reads microseconds.
     args = [binary, "--serving",
             "--chakra-send-admission=" + chakra_send_admission,
+            "--chakra-runtime-unit=ns",
             "--workload-configuration=" + workload,
             "--system-configuration=" + system_config,
             "--network-configuration=" + network_config,
@@ -231,6 +234,59 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
         args.append("--end-npu-ids=" + end_npu_ids)
     args += fabric.htsim_opts()
     return args
+
+
+# Chakra node-type numbering: the casys-kaist schema the frontend writes
+# inserts PIM_COMP_NODE = 4, shifting COMP/SEND/RECV/COLL to 5/6/7/8; the
+# panel backend's feeder is compiled against upstream's 4/5/6/7. The two
+# schemas are otherwise identical (11-line diff, same Node fields, same
+# CollectiveCommType values). Read as the wrong type, a COMP node becomes a
+# zero-byte send and the first ALLREDUCE never issues.
+_FRONTEND_TO_PANEL_NODE_TYPE = {0: 0, 1: 1, 2: 2, 3: 3, 5: 4, 6: 5, 7: 6, 8: 7}
+_FRONTEND_PIM_COMP_NODE = 4
+_PANEL_SCHEMA_MARK = "panel_backend_schema"
+
+
+def transcode_et_for_panel(path: str) -> bool:
+    """Rewrite one Chakra .et from the frontend's node numbering to the panel's.
+
+    Idempotent: the file's GlobalMetadata is tagged, and a tagged file is
+    left alone (a second remap would turn COMP=4 into the PIM type). Returns
+    True when the file was rewritten. Raises on a PIM compute node, which
+    the panel backend does not model.
+    """
+    from chakra.schema.protobuf.et_def_pb2 import GlobalMetadata, Node
+    from chakra.src.third_party.utils.protolib import decodeMessage, encodeMessage
+
+    with open(path, "rb") as f:
+        gm = GlobalMetadata()
+        decodeMessage(f, gm)
+        if any(a.name == _PANEL_SCHEMA_MARK for a in gm.attr):
+            return False
+        nodes = []
+        while True:
+            node = Node()
+            if not decodeMessage(f, node):
+                break
+            nodes.append(node)
+    for node in nodes:
+        if node.type == _FRONTEND_PIM_COMP_NODE:
+            raise ValueError(f"{path}: node {node.id} ({node.name}) is a PIM_COMP_NODE; "
+                             "PIM offload is not supported by the panel backend")
+        try:
+            node.type = _FRONTEND_TO_PANEL_NODE_TYPE[node.type]
+        except KeyError:
+            raise ValueError(f"{path}: node {node.id} has unknown node type {node.type}")
+    mark = gm.attr.add()
+    mark.name = _PANEL_SCHEMA_MARK
+    mark.int64_val = 1
+    tmp = path + ".panel.tmp"
+    with open(tmp, "wb") as f:
+        encodeMessage(f, gm)
+        for node in nodes:
+            encodeMessage(f, node)
+    os.replace(tmp, path)
+    return True
 
 
 def resolve_binary(cli_value: Optional[str]) -> str:
