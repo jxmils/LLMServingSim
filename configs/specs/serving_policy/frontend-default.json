@@ -1,0 +1,33 @@
+{
+  "spec_version": 1,
+  "name": "frontend-default",
+  "description": "LLMServingSim's own policies as of upstream a4053bc, named so a run states them: vLLM-V1-shaped continuous batching, whole-sequence admission, no prefill/decode split, KV reserved on admission (reserve_full_isl), preemption from the running set's tail, no prefetch, no network-aware scheduling.",
+  "admission": {
+    "policy": "vllm_v1_waiting_queue",
+    "reserve_full_isl": true,
+    "max_num_seqs": 128,
+    "max_num_batched_tokens": 2048
+  },
+  "batching": {
+    "policy": "continuous",
+    "chunked_prefill": true,
+    "long_prefill_token_threshold": null
+  },
+  "prefill_decode": {
+    "policy": "colocated"
+  },
+  "reservation": {
+    "policy": "early",
+    "notes": "capacity reserved at admission for the whole sequence; G6 adds transfer-time and just-in-time"
+  },
+  "eviction": {
+    "policy": "preempt_running_tail",
+    "recompute_on_resume": true
+  },
+  "prefetch": {
+    "policy": "none"
+  },
+  "network_aware": {
+    "policy": "none"
+  }
+}

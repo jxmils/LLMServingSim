@@ -386,6 +386,10 @@ def main():
                         help='FabricSpec JSON for --network-backend htsim (physical panel fabric, rendered to --htsim_opts)')
     parser.add_argument('--panel-backend-binary', type=str, default=None,
                         help='AstraSim_HTSim binary for --network-backend htsim (default: $PANEL_ASTRA_HTSIM)')
+    for kind in ('model', 'hardware', 'placement', 'serving-policy'):
+        parser.add_argument(f'--{kind}-spec', type=str, default=None,
+                            help=f'{kind} specification JSON (configs/specs/{kind.replace("-", "_")}/); '
+                            'loaded, cross-checked and written resolved into the run inputs root')
     parser.add_argument('--chakra-send-admission', type=str, choices=['serialized', 'concurrent'], default='serialized',
                         help='panel backend per-NPU send gate (--network-backend htsim): serialized (one in-flight '
                         'Chakra send per NPU, the retained campaigns\' setting) or concurrent')
@@ -469,6 +473,23 @@ def main():
         # Chakra node numbering right after conversion (see panel_backend).
         import serving.core.graph_generator as _graph_generator
         _graph_generator.ET_POSTPROCESS = transcode_et_for_panel
+        # Resolved specifications of this run (plan sec. 3): every spec given
+        # on the command line plus the fabric, with source hashes, under the
+        # run's inputs root. Cross-check violations are fatal.
+        from serving.core import specs as _specs
+        run_specs = {'fabric': _specs.Spec('fabric', fabric_spec.name, dict(fabric_spec.options, nodes=fabric_spec.nodes, name=fabric_spec.name),
+                                           fabric_spec.source or fabric_spec_path, _specs._sha256(fabric_spec_path))}
+        for kind, cli in (('model', args.model_spec), ('hardware', args.hardware_spec),
+                          ('placement', args.placement_spec), ('serving_policy', args.serving_policy_spec)):
+            if cli:
+                run_specs[kind] = _specs.load_spec(kind, cli if os.path.isabs(cli) else os.path.join(cwd, cli))
+        violations = _specs.cross_check(run_specs)
+        if violations:
+            raise ValueError('specification cross-check failed: ' + '; '.join(violations))
+        resolved_path = _specs.emit_resolved(run_specs, os.path.join(run_paths.inputs_root, 'specs'),
+                                             extra={'run_id': args.run_id, 'network_backend': network_backend,
+                                                    'cluster_config': args.cluster_config})
+        print(f"Resolved specifications: {resolved_path}")
     elif network_backend == 'htsim-shim':
         # Protocol stub: the frontend's own interpreter runs the shim in place of
         # an ASTRA-Sim binary. Returns fixed cycles; never use for performance runs.
