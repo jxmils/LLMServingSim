@@ -1,0 +1,22 @@
+{
+  "spec_version": 1,
+  "name": "ironwood-like",
+  "description": "Ironwood-like endpoint exactly as Panel-Scale-Systems/src/configs/ironwood_chip_endpoint_v1.json (one endpoint = one chip, two chiplets aggregated; chiplet-faithful placement and D2D timing not claimed). Collective arithmetic is treated as offloaded and not charged to the tensor cores, as in the campaign.",
+  "source": "Panel-Scale-Systems/src/configs/ironwood_chip_endpoint_v1.json",
+  "provenance": "analytically_estimated",
+  "frontend_hardware_label": "IRONWOODLIKE",
+  "compute": {
+    "peak_dense_tflops": 2307,
+    "precision": "bf16",
+    "kernel_floor_us": 5.0,
+    "achieved_fraction": 0.7,
+    "model": "time = max(flops / (peak * achieved_fraction), bytes / hbm_bandwidth) + kernel_floor"
+  },
+  "hbm_capacity_gib": 192,
+  "hbm_bandwidth_gbps": 7380,
+  "precisions": ["bf16"],
+  "execution_resources": {"in_flight_compute_ops": 1, "in_flight_comm_ops": 1},
+  "dma": {"engines": 1, "notes": "no separate DMA model in G4"},
+  "timings_include": {"communication": false, "dma": false, "offload": false},
+  "notes": "The endpoint JSON's link figures (6 ports x 200 GB/s, 1000 ns) belong to the FabricSpec, not here: a HardwareSpec never implies a fabric."
+}

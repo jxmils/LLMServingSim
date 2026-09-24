@@ -1,0 +1,21 @@
+{
+  "spec_version": 1,
+  "name": "b200-like",
+  "description": "B200-like accelerator for the panel serving experiments. Roofline from published NVIDIA Blackwell B200 datasheet figures (dense BF16 tensor throughput 2.25 PFLOPS, HBM3e 8 TB/s, 180 GB). No measurement behind these timings; every profile synthesized from this spec is labelled analytically_estimated and the label is printed with the numbers. Not the port-budget study's 'b200' row (that was a four-port 200 GiB/s link budget).",
+  "provenance": "analytically_estimated",
+  "frontend_hardware_label": "B200LIKE",
+  "compute": {
+    "peak_dense_tflops": 2250,
+    "precision": "bf16",
+    "kernel_floor_us": 5.0,
+    "achieved_fraction": 0.7,
+    "model": "time = max(flops / (peak * achieved_fraction), bytes / hbm_bandwidth) + kernel_floor"
+  },
+  "hbm_capacity_gib": 167.6,
+  "hbm_bandwidth_gbps": 8000,
+  "precisions": ["bf16", "fp8"],
+  "execution_resources": {"in_flight_compute_ops": 1, "in_flight_comm_ops": 1},
+  "dma": {"engines": 1, "notes": "no separate DMA model in G4; memory-pool transfers are network flows (G5)"},
+  "timings_include": {"communication": false, "dma": false, "offload": false},
+  "notes": "180 GB = 167.6 GiB. achieved_fraction and kernel_floor_us are stated assumptions of the roofline, swept in G7 sensitivity, never presented as measurements."
+}
