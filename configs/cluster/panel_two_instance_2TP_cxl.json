@@ -1,0 +1,59 @@
+{
+    "num_nodes": 1,
+    "link_bw": 16,
+    "link_latency": 20000,
+    "nodes": [
+        {
+            "num_instances": 2,
+            "cpu_mem": {
+                "mem_size": 512,
+                "mem_bw": 256,
+                "mem_latency": 0
+            },
+            "instances": [
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "RTXPRO6000",
+                    "npu_mem": {
+                        "mem_size": 96,
+                        "mem_bw": 1597,
+                        "mem_latency": 0
+                    },
+                    "pd_type": null,
+                    "tp_size": 2,
+                    "placement": {
+                        "default": {
+                            "weights": "npu",
+                            "kv_loc": "npu",
+                            "kv_evict_loc": "cxl:0"
+                        }
+                    }
+                },
+                {
+                    "model_name": "meta-llama/Llama-3.1-8B",
+                    "hardware": "RTXPRO6000",
+                    "npu_mem": {
+                        "mem_size": 96,
+                        "mem_bw": 1597,
+                        "mem_latency": 0
+                    },
+                    "pd_type": null,
+                    "tp_size": 2,
+                    "placement": {
+                        "default": {
+                            "weights": "npu",
+                            "kv_loc": "npu",
+                            "kv_evict_loc": "cxl:0"
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "cxl_mem": {
+        "mem_size": 512,
+        "mem_latency": 300,
+        "mem_bw": 100,
+        "num_devices": 1
+    }
+}

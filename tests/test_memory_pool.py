@@ -56,3 +56,18 @@ def test_compose_appends_endpoint_and_bank_past_highest_id(tmp_path):
 def test_fabric_without_pool_has_no_pool_configuration():
     fs = FabricSpec.load(BASE)
     assert pool_configuration_path(fs) is None
+
+
+def test_cxl_tier_accepted_only_with_a_pool(tmp_path):
+    import json
+    from serving.core.panel_backend import translate_memory_config
+    mem = {"remote_mem": {"memory-type": "PER_NODE_MEMORY_EXPANSION", "mem-bw": 256, "mem-latency": 0, "num-devices": 1},
+           "cxl_mem": {"memory-type": "MEMORY_POOL", "mem-bw": 100, "mem-latency": 300, "mem-size": 512 * 10**9, "num-devices": 1}}
+    src = tmp_path / "memory_expansion.json"
+    json.dump(mem, open(src, "w"))
+    import pytest
+    with pytest.raises(ValueError, match="memory pool"):
+        translate_memory_config(str(src), 1, 4)
+    pool = os.path.join(ROOT, "configs", "fabric", "custom4_shared_pool_a.pool.json")
+    out = translate_memory_config(str(src), 1, 4, pool_config=pool)
+    assert json.load(open(out))["remote-mem-bw"] == 256

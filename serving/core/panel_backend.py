@@ -155,7 +155,8 @@ SEND_ADMISSION_MODES = ("serialized", "concurrent")
 
 
 def translate_memory_config(frontend_path: str, num_nodes: int, npus_per_node: int,
-                            out_path: Optional[str] = None) -> str:
+                            out_path: Optional[str] = None,
+                            pool_config: Optional[str] = None) -> str:
     """Write the panel backend's remote-memory config from the frontend's.
 
     config_builder emits the casys-kaist multi-level layout
@@ -169,10 +170,27 @@ def translate_memory_config(frontend_path: str, num_nodes: int, npus_per_node: i
     """
     with open(frontend_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
+    # The CXL tier is served by a physical memory pool of the fabric (G5):
+    # its MEM_LOAD/MEM_STORE nodes become flows to the pool's bank. Without a
+    # pool in the fabric there is nothing on the panel side to model it.
     unsupported = [k for k in ("cxl_mem", "local_mem") if k in raw]
+    if "cxl_mem" in unsupported and pool_config:
+        with open(pool_config, "r", encoding="utf-8") as f:
+            pool = json.load(f)
+        if pool.get("tensor_loc_pool", {}).get("CXL") is None:
+            raise ValueError(f"{pool_config}: the fabric's memory pool does not serve the CXL "
+                             "tensor location; compose the fabric with a pool for it")
+        cxl = raw["cxl_mem"]
+        cap = sum(int(p.get("capacity_bytes", 0)) for p in pool.get("pools", []))
+        want = float(cxl.get("mem-size", cxl.get("mem_size", 0))) * (1 if cxl.get("mem-size", 0) > 1e6 else 1e9)
+        if want and cap and abs(cap - want) / max(cap, want) > 0.10:
+            raise ValueError(f"{frontend_path}: cxl_mem size {want:.0f} B differs from the pool "
+                             f"capacity {cap} B by more than 10%; size the cluster from the pool spec")
+        unsupported.remove("cxl_mem")
     if unsupported:
         raise ValueError(f"{frontend_path}: memory tiers {unsupported} are not supported by the "
-                         "panel backend (G2 models the CPU/remote tier only)")
+                         "panel backend (the CPU/remote tier is analytical; a CXL tier needs a "
+                         "memory pool in the fabric)")
     remote = raw.get("remote_mem")
     if remote is None:
         out = {"memory-type": "NO_MEMORY_EXPANSION"}
@@ -241,7 +259,9 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
             "the packet backend cannot map ranks onto a fabric of a different size")
     if num_nodes <= 0 or logical % num_nodes != 0:
         raise ValueError(f"num_nodes={num_nodes} does not divide the {logical} logical NPUs")
-    panel_memory = translate_memory_config(memory_config, num_nodes, logical // num_nodes)
+    pool_cfg = pool_configuration_path(fabric)
+    panel_memory = translate_memory_config(memory_config, num_nodes, logical // num_nodes,
+                                           pool_config=pool_cfg)
     # The frontend's trace_generator writes COMP durations in nanoseconds
     # (profiler time_us * 1000); the backend's default reads microseconds.
     args = [binary, "--serving",
@@ -255,7 +275,6 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
         args.append("--start-npu-ids=" + start_npu_ids)
     if end_npu_ids != "":
         args.append("--end-npu-ids=" + end_npu_ids)
-    pool_cfg = pool_configuration_path(fabric)
     if pool_cfg:
         # Pool MEM_LOAD/MEM_STORE nodes become flows to/from the pool's bank
         # device; REMOTE (CPU) locations keep the analytical remote memory.
