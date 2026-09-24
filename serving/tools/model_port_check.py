@@ -84,8 +84,19 @@ def per_rank(model, placement, inst_idx: int = 0) -> Dict[str, float]:
     moe = m.get("moe")
     n_moe = b["moe_layers"]
     # dense parts sharded by TP; experts by EP; embeddings/lm_head by TP
-    # routed experts are sharded by EP; everything else (incl. shared experts) by TP
-    dense_per_rank = (b["params"] - n_moe * moe["num_experts"] * b["expert_params_each"]) / tp if moe else b["params"] / tp
+    # routed experts are sharded by EP; everything else (incl. shared experts)
+    # by TP -- except what vLLM replicates on every rank: the KV projection
+    # once tp exceeds the KV-head count (each rank holds a whole head), the
+    # MoE router (d x E per MoE layer) and the norms. The frontend's
+    # "model weight" line is the sum over ranks of the resident bytes, so it
+    # includes these replicas.
+    routed_params = n_moe * moe["num_experts"] * b["expert_params_each"] if moe else 0
+    kv_proj_total = 2 * d * b["kv_dim"] * L if m["attention"]["kind"] == "gqa" else 0
+    kv_proj_per_rank = 2 * d * kv_local * L if m["attention"]["kind"] == "gqa" else 0
+    router_total = n_moe * d * moe["num_experts"] if moe else 0
+    norm_total = L * (2 * d + 2 * hd)
+    sharded = b["params"] - routed_params - kv_proj_total - router_total - norm_total
+    dense_per_rank = sharded / tp + kv_proj_per_rank + router_total + norm_total
     experts_per_rank = (moe["num_experts"] / ep) if moe else 0
     expert_bytes_per_rank = n_moe * experts_per_rank * b["expert_params_each"] * fp
     owners = placement.get("expert_owner")
@@ -96,6 +107,8 @@ def per_rank(model, placement, inst_idx: int = 0) -> Dict[str, float]:
     return {
         "tp": tp, "ep": ep,
         "weight_bytes_per_rank": dense_per_rank * fp + expert_bytes_per_rank,
+        "replicated_bytes_per_rank": (kv_proj_per_rank + router_total + norm_total) * fp,
+        "weight_bytes_all_ranks_resident": (dense_per_rank * fp + expert_bytes_per_rank) * tp,
         "expert_bytes_per_rank": expert_bytes_per_rank,
         "experts_per_rank": experts_per_rank,
         "expert_owner_counts": counts,
