@@ -32,13 +32,35 @@ class Controller():
             line = p.stdout.readline()
             # For debugging
             # print(line, end='')
+            if line == "":
+                self._backend_gone(p, out)
             out.append(line)
         return out
+
+    def _backend_gone(self, p, out):
+        """The backend closed stdout mid-protocol: it crashed or exited.
+
+        Without this the loop above reads "" forever at 100% CPU, which is
+        indistinguishable from a long iteration from the outside.
+        """
+        rc = p.poll()
+        if rc is None:
+            try:
+                rc = p.wait(timeout=5)
+            except Exception:
+                rc = None
+        tail = "".join(l for l in out[-6:] if l).strip()
+        raise RuntimeError(
+            f"network backend exited (return code {rc}) before the next 'Waiting'; "
+            f"last output: {tail[-400:]!r}")
 
     def check_end(self, p):
         out = ["",""]
         while out[-2] != "All Request Has Been Exited\n" and out[-2] != "ERROR: Some Requests Remain\n":
-            out.append(p.stdout.readline())
+            line = p.stdout.readline()
+            if line == "":
+                self._backend_gone(p, out)
+            out.append(line)
             p.stdout.flush()
         print(out[-4], end='')
         print(out[-2], end='')
