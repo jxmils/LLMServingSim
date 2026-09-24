@@ -211,6 +211,11 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
         raise ValueError(f"chakra_send_admission must be one of {SEND_ADMISSION_MODES}, "
                          f"got {chakra_send_admission!r}")
     logical = logical_npu_count(network_config)
+    if logical < 2:
+        # The htsim frontend reads network.yml through astra-network-analytical's
+        # parser, which exits with "npus_count (1) should be larger than 1".
+        raise ValueError("the panel backend needs at least 2 logical NPUs (its network parser "
+                         "refuses a single-NPU topology); use a tp_size >= 2 cluster")
     if logical != fabric.nodes:
         raise ValueError(
             f"FabricSpec {fabric.name} has {fabric.nodes} nodes but the cluster "

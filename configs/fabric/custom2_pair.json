@@ -1,0 +1,16 @@
+{
+  "spec_version": 1,
+  "name": "custom2-pair",
+  "description": "Two endpoints with one link pair, for single-instance TP2 scenarios on the panel backend (a single NPU is refused by the backend's network parser). Normalized units. maxwin 2 MiB as in the hybrid N=64 fixtures: with -nocc the window is the whole message and an 8 MiB TP2 all-reduce chunk overflows a 4000-packet queue (3072 retransmissions in the first run).",
+  "nodes": 2,
+  "panel": "custom",
+  "graph": "custom2_pair.graph",
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "policy": "static",
+  "q": 4000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true,
+  "maxwin": 2097152
+}

@@ -83,6 +83,13 @@ def test_backend_args_check_rank_count(tmp_path):
     wrong = FabricSpec.load(_write(tmp_path, "g.json", dict(HYBRID, nodes=16)))
     with pytest.raises(ValueError, match="16 nodes but the cluster config resolves to 64"):
         build_backend_args("/bin/true", wrong, "/w/llm", "/s.json", str(net), mem)
+    # a single-NPU topology is refused by the backend's network parser
+    one = tmp_path / "net1.yml"
+    one.write_text("topology: [FullyConnected]\nnpus_count: [1]\nbandwidth: [16]\nlatency: [500]\n",
+                   encoding="utf-8")
+    lone = FabricSpec.load(_write(tmp_path, "l.json", {"spec_version": 1, "nodes": 1}))
+    with pytest.raises(ValueError, match="at least 2 logical NPUs"):
+        build_backend_args("/bin/true", lone, "/w/llm", "/s.json", str(one), mem)
 
 
 def test_memory_config_translation(tmp_path):
