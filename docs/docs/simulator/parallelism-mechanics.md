@@ -20,8 +20,9 @@ of these on) is on
 | **EP** (expert) | MoE experts split across ranks | ALLTOALL | Around the MoE block |
 | **DP+EP** | EP across multiple instances | ALLTOALL | Same, but across instance boundaries with wave-sync |
 
-TP and EP can share the same GPUs. DP+EP requires a `dp_group`
-identifier on the cluster config.
+TP and EP can share the same GPUs. DP requires a `dp_group`
+identifier on the cluster config — for a dense model that is plain data
+parallelism, and for MoE it also spreads experts across the group.
 
 ## TP, ALLREDUCE on every dense layer
 
@@ -82,13 +83,32 @@ When `pp_size > 1`, the scheduler keeps an `inflight` list capped at
 `None` and waits for ASTRA-Sim to drain a stage, the same
 back-pressure pattern as Megatron-style 1F1B.
 
-The trace header is stamped with `model_parallel_NPU_group: {pp_size}`.
-Chakra's `llm_converter.py` partitions the per-iteration layer list
-into `pp_size` contiguous groups (`layers_per_group = num_layers //
-pp_size`) and emits one `.et` per NPU. At each stage boundary it pairs
-a `COMM_SEND_NODE` on the upstream NPU with a matching
-`COMM_RECV_NODE` on the downstream one, sized by the boundary
+The trace header is stamped with `model_parallel_NPU_group: {pp_size}`
+plus `pp_stage_boundaries`, the layer-row indices at which each stage
+after the first begins. `trace_generator.py` computes them from the
+transformer-block starts it just wrote, using the same partitioning
+rule as vLLM's `get_pp_indices`: blocks split evenly, with any
+remainder going to the stages *before* the last one, since the last
+stage also carries `final_layernorm` / `lm_head` / `sampler`. Chakra's
+`llm_converter.py` reads the boundaries and emits one `.et` per NPU. At
+each stage boundary it pairs a `COMM_SEND_NODE` on the upstream NPU with
+a matching `COMM_RECV_NODE` on the downstream one, sized by the boundary
 activation tensor.
+
+Stages are cut **only** on transformer-block boundaries. That is the
+one place where the upstream layer's `output_size` and the downstream
+layer's `input_size` are the same tensor — the hidden state, since a
+block runs `layernorm` → … → `down_proj`/`moe`. Inside a block they
+differ (`qkv_proj` emits Q+K+V, `rotary_emb` declares only Q+K), and
+ASTRA-Sim's analytical backend keys its send/recv callback tracker on
+`(tag, src, dst, chunk_size, chunk_id)` — so a size disagreement never
+matches and the downstream NPU waits forever instead of raising. Cutting
+the raw line count evenly used to land boundaries mid-block, which is
+what made only some `pp_size` values hang.
+
+`--enable-sub-batch-interleaving` is rejected with `pp_size > 1`: an
+interleaved trace leaves both sub-batches mid-block at every group edge,
+so a stage has no single hidden state to hand on.
 
 Inter-stage P2P latency (link bandwidth, hop count, contention) is
 therefore part of the reported iteration time, and pipeline overlap
@@ -156,10 +176,10 @@ sequenceDiagram
     participant DPB as Python<br/>dp_pending barrier
     participant A as ASTRA-Sim
     I1->>I1: scheduler.schedule()
-    I1->>DPB: dp_pending["A"][0] = batch
+    I1->>DPB: dp_pending["A"][0].append(batch)
     Note over I2: scheduling on its own pace
     I2->>I2: scheduler.schedule()
-    I2->>DPB: dp_pending["A"][1] = batch
+    I2->>DPB: dp_pending["A"][1].append(batch)
     Note over DPB: All members ready
     DPB->>I1: emit trace (comm_size = max)
     DPB->>I2: emit trace (comm_size = max)
@@ -176,16 +196,22 @@ synchronization mechanisms work together:
 
 ### 1. Python-side `dp_pending` barrier
 
-In `__main__.py`, a `dp_pending` dict tracks which DP-group members
-have scheduled their batches for the current wave. Trace generation
-is **deferred** until all members have scheduled. When the last
-member arrives:
+In `__main__.py`, `dp_pending` holds one **queue per DP-group member**
+of batches waiting for their wave. Trace generation is **deferred** until
+every member has at least one batch queued; the wave then takes the
+oldest from each, so a wave always pairs the members' *j*-th batches —
+the same pairing production serving gets, where DP rank A's *j*-th
+forward joins the same collective as rank B's *j*-th. The queue matters
+at `pp_size > 1`, where a member can have up to `pp_size` batches
+outstanding at once. When a wave assembles:
 
-- The simulator computes `dp_sum_total_len = sum(total_len)` and
-  `dp_max_total_len = max(total_len)` across the group.
-- `comm_size_alltoall` is set to
-  `dp_max_total_len * hidden_size * fp_size`: the *max* across the
-  group, matching CUDA-graph padding in production MoE serving.
+- The simulator takes `max_total_len` across the group and pads every
+  member's batch up to it, matching CUDA-graph DP padding in production
+  serving.
+- The MoE collective size is anchored to that same `max_total_len` — *not*
+  `max x dp_group_size`. That calibrates the AllGather/ReduceScatter
+  bandwidth model against the same `link_bw` that already matches
+  AllReduce.
 - All members generate their traces with the same `comm_size`, even
   if their per-instance `total_len` differs.
 
@@ -194,6 +220,13 @@ If one DP member has no pending requests, the scheduler synthesizes a
 all of one member's real requests have finished but the others
 haven't, the dummy batches keep flowing until the whole group is
 done.
+
+A wave's graphs cannot be emitted at schedule time — the padded
+`max_total_len` is not known until the barrier assembles — so each
+member's graph is handed to the NPU that opened its round on that NPU's
+next poll, ahead of anything the scheduler would otherwise start. That
+keeps each NPU running its batches in the order they were opened, which
+is what the completion bookkeeping assumes.
 
 ### 2. ASTRA-Sim ALLTOALL barrier
 
@@ -207,16 +240,25 @@ So both halves of the sync, Python deferral on submission, ASTRA-Sim
 blocking on the collective, together produce a deterministic
 wave-synchronous schedule.
 
-## 2D ASTRA-Sim topology and `involved_dim`
+## Multi-dimensional ASTRA-Sim topology and `involved_dim`
 
-`config_builder` generates a 2D ASTRA-Sim network when DP groups are
-present. The topology is `npus_count: [tp_size, dp_group_size]`.
-Collectives are scoped per dimension via the `involved_dim` BoolList
-on each `COMM_COLL_NODE`:
+`config_builder` generates a multi-dimensional ASTRA-Sim network when DP
+groups are present, innermost dimension first:
+`npus_count: [tp_size, dp_group_size]`, or
+`[tp_size, pp_size, dp_group_size]` when `pp_size > 1`. This mirrors
+vLLM's rank layout, `all_ranks.reshape(-1, dp, pp, pcp, tp)`; the
+`pp_size` dimension is omitted when it is 1, so DP+TP configs keep their
+2-D topology. Collectives are scoped per dimension via the
+`involved_dim` BoolList on each `COMM_COLL_NODE`:
 
-- **TP-ALLREDUCE:** `involved_dim = [True, False]`: dim 0 only.
-- **EP-ALLTOALL:** `involved_dim = [False, True]`: dim 1 only when
-  EP spans the DP group; `[True, True]` if EP also spans TP.
+- **TP-ALLREDUCE:** the TP dim only — `[True, False]`, or
+  `[True, False, False]` with PP.
+- **EP:** the DP dim, plus the TP dim when EP spans past one instance's
+  GPUs — `[False, True]` / `[True, True]`, or `[False, False, True]` /
+  `[True, False, True]` with PP. The PP dim is **never** involved:
+  vLLM's EP group is `all_ranks.transpose(1, 2).reshape(-1, dp*pcp*tp)`,
+  whose transpose pins the pipeline stage, so experts are sharded across
+  the DP x TP ranks of one stage.
 
 The `involved_dim` is encoded in the trace's `comm_type` field with
 a `:dim0,dim1` suffix:
@@ -265,12 +307,14 @@ A rough decision tree (the *configuration* angle is on
   EP-ALLTOALL replaces TP-ALLREDUCE on the MoE block.
 - **MoE, want to scale experts past one instance's GPUs:** DP+EP
   with `dp_group` set. EP spans instances via wave-sync.
+- **Dense model, want data-parallel replicas:** `dp_group` set and no
+  `ep_size`. The replicas are wave-synchronized but share no experts.
 
 ## Gotchas
 
 1. **`ep_size > tp_size` requires `dp_group`.** Otherwise the cluster
-   config builder rejects the spec. EP needs the 2D topology to scale
-   beyond a single instance's GPU count.
+   config builder rejects the spec. EP needs the DP dimension of the
+   topology to scale beyond a single instance's GPU count.
 2. **Dummy batches are real ASTRA-Sim work.** A DP group with one
    idle instance still pays the ALLTOALL cost on the dummy batch.
    This is what production looks like, wave-sync is wave-sync.

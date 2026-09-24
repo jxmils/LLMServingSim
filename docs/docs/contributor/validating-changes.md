@@ -5,86 +5,134 @@ title: Validating your changes
 
 # Validating your changes
 
-The project does not (yet) ship a unit-test suite. Validation is
-done by running the simulator against known scenarios and comparing
-results. This page covers the three checks you should run before
-opening a PR, in increasing order of cost.
+The project does not ship a unit-test suite. The simulator is
+**deterministic** instead — the same cluster config, workload and flags
+reproduce the same makespan exactly — so validation is equality against
+recorded results rather than eyeballing plots. `serving/validate.sh`
+runs that comparison for you.
 
-## 1. Smoke run (every PR, ~30 seconds)
-
-The minimum bar: run the smallest bundled scenario and confirm it
-still finishes without errors.
+## 1. Run the validation script (every PR)
 
 ```bash
-python -m serving \
-    --cluster-config configs/cluster/single_node_single_instance.json \
-    --dataset workloads/example_trace.jsonl \
-    --output outputs/smoke.csv \
-    --num-reqs 10
+./serving/validate.sh
 ```
 
-What to check:
+Two stages, about eight minutes total:
 
-- Exit code is 0.
-- `outputs/smoke.csv` has 10 rows plus a header.
-- The throughput log line at the end shows non-zero `prompt_t` and
-  `decode_t`.
+1. **Behaviour** — every scenario in `serving/validate-baselines.txt`,
+   compared against its recorded `Total clocks (ns)`. Every cluster
+   config, every parallelism shape (TP, PP, DP and their combinations, EP),
+   prefix caching and the tiers below it, the scheduler flags, both routing
+   policies, PIM, CXL, P/D disaggregation, agentic sessions and two hardware
+   profiles.
+2. **Accuracy** — regenerates each `bench/examples` entry's `outputs/sim.csv`
+   and `validation/summary.txt` and checks both md5s. `sim.csv` is the
+   per-request TTFT / TPOT / latency against a recorded real vLLM run;
+   `summary.txt` is the error table this site quotes. Digesting both catches
+   drift a total clock could hide, and a summary that no longer describes its
+   own `sim.csv`. The three plots are regenerated but **not** digested —
+   matplotlib output is not stable across versions, and a check that fails for
+   the wrong reason stops being read.
 
-If your change is in `serving/`, this is the floor. Don't push a
-commit that breaks the smoke run.
+A clean run ends with:
 
-## 2. Targeted scenarios (when the change touches related features)
+```
+Behaviour: 58/58 scenarios match their baselines.
+Accuracy: all 8 sim.csv + summary.txt files are byte-identical.
+```
 
-Map your edit to the scenario(s) that exercise it. The bundled
-cluster configs cover the major features:
+That is the bar for a change that claims to be behaviour-preserving. A
+refactor that moves any of these numbers is not behaviour-preserving.
 
-| If you touched... | Run scenario |
-| --- | --- |
-| `scheduler.py` (any path) | `single_node_single_instance.json` |
-| Prefix caching, RadixCache | `single_node_multi_instance.json` with `--enable-prefix-sharing` |
-| KV cache, eviction, memory model | `single_node_memory_instance.json` |
-| Multi-instance routing | `single_node_multi_instance.json` |
-| Prefill / decode disaggregation | `single_node_pd_instance.json` |
-| MoE, expert parallelism | `single_node_moe_single_instance.json` |
-| DP+EP wave sync | `single_node_moe_dp_ep_instance.json` |
-| CXL placement | `single_node_cxl_instance.json` |
-| PIM offload | `single_node_pim_instance.json` |
-| Power model | `single_node_power_instance.json` |
-| Trace generator, graph generator | any of the above |
+Useful variations:
 
-`serving/run.sh` contains ready-to-run commands for all of these.
-Pick the relevant ones and confirm they still produce sensible
-output.
+```bash
+./serving/validate.sh --clocks-only     # skip the slow accuracy stage
+./serving/validate.sh dp moe_dp_pp      # just these scenarios, while iterating
+./serving/validate.sh --list            # scenario names
+./serving/validate.sh --help            # all options
+```
+
+Run it from the repo root inside the simulator container.
+
+## 2. If something changed, report it
+
+The script prints a markdown table of everything that moved, and writes
+the same thing to `report.md` in its log directory:
+
+```
+## Validation report
+
+Behaviour -- 1/58 scenarios changed:
+
+| scenario | baseline | now | delta |
+| --- | --- | --- | --- |
+| `moe_dp_pp` | 1435561517 | 1435559904 | -0.0001% |
+```
+
+**A difference is not automatically a bug — but it is never
+self-explanatory.** Paste the table into the PR and add, per row, what in
+your change moved it and why the new number is the right one. Reviewers
+cannot tell an intended fix from an accidental regression by looking at the
+diff.
+
+If the change is intended, land the new truth in the same PR:
+
+1. `./serving/validate.sh --update`, then commit `serving/validate-baselines.txt`.
+2. If a `sim.csv` changed, also run `./bench/examples/validate.sh` and commit
+   the regenerated `outputs/sim.csv`, `validation/summary.txt` and the three
+   plots for each affected example. A changed `sim.csv` makes those plots and
+   that summary stale — leaving them behind publishes accuracy numbers for a
+   simulator that no longer exists.
+
+:::caution[A passing scenario is not proof your case is covered]
+`workloads/example_trace.jsonl` has 2–22 token prompts, so most scenarios
+never fill the KV cache and their DP members always drain together. That is
+why issue #65 survived a green `moe_dp_pp`: the bug needed one DP member to
+go idle while another was still busy. The `*_uneven` and `saturated_*`
+scenarios exist for exactly those regimes. If your change targets a regime
+no scenario reaches, see
+[the last section](#when-the-existing-scenarios-dont-cover-what-you-changed).
+:::
 
 ## 3. Bench validation (changes that affect end-to-end accuracy)
 
-If your change could move the simulator's output relative to real
-vLLM (anything in `scheduler.py`, `trace_generator.py`,
-`memory_model.py`, profile lookup, MoE accounting), run a bench
-validation against a committed reference run.
+Step 1's accuracy stage tells you *whether* `sim.csv` moved. This step
+tells you *by how much* — run it when that digest check fails, or when your
+change could move the simulator's output relative to real vLLM (anything in
+`scheduler.py`, `trace_generator.py`, `memory_model.py`, profile lookup, MoE
+accounting) and you want the error numbers before opening the PR.
 
 The bench module captures a real vLLM execution, then compares the
 simulator's output for the same dataset:
 
 ```bash
 # 1. Rerun the sim side of an existing example
-./bench/examples/run.sh Llama-3.1-8B
+./bench/examples/run.sh RTXPRO6000/Llama-3.1-8B
 
 # 2. Compare against the committed vLLM reference
-./bench/examples/validate.sh Llama-3.1-8B
+./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B
 ```
 
-Output lands in `bench/examples/Llama-3.1-8B/validation/`:
+Output lands in `bench/examples/RTXPRO6000/Llama-3.1-8B/validation/`:
 
 - `summary.txt`: aggregate error on TTFT / TPOT / throughput.
-- A handful of PDFs: per-request latency CDF, throughput timeline,
-  running-waiting curves.
+- Three PNGs: `latency.png` (per-request latency CDF), `throughput.png`
+  (throughput timeline), `requests.png` (running / waiting curves).
 
-The committed reference baselines target sub-3% error on TTFT, TPOT,
-and throughput. **A regression beyond ~5% is a blocker.** Smaller
-movements need an explanation in the PR description (e.g., "this
-fixes an under-counting bug; the new error is closer to ground
+The committed reference baselines land within 1.7% on TPOT means and
+2.2% on end-to-end latency means; TTFT means span +1.3% to -13.6%
+— see **[Validation](/docs/validation)** for the per-configuration
+table.
+**A regression beyond ~5% against those baselines is a blocker.**
+Smaller movements need an explanation in the PR description (e.g.,
+"this fixes an under-counting bug; the new error is closer to ground
 truth than the old").
+
+Compare against the numbers in
+`bench/examples/<hardware>/<model>/validation/summary.txt`, not against the ~5%
+figure in the abstract: TTFT already sits at -13.6% on the MoE
+configuration, so "within 5%" is not a bar it currently clears.
 
 For deeper detail on the validation methodology, see
 [`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/blob/main/bench/README.md).
@@ -101,8 +149,8 @@ MODEL=meta-llama/Llama-3.1-8B HARDWARE=RTXPRO6000 \
     ./profiler/profile.sh
 ```
 
-Then verify the simulator still loads it cleanly with the smoke
-run from step 1.
+Then verify the simulator still loads it cleanly:
+`./serving/validate.sh --clocks-only single`.
 
 If you only changed the alpha fit (`fit_alpha.py`), you can use
 `SKIP_DENSE=1 SKIP_PER_SEQUENCE=1 SKIP_ATTENTION=1 SKIP_MOE=1
@@ -114,13 +162,12 @@ without rerunning the rest.
 In your PR description, include the exact command you ran and the
 key number from the output. Examples:
 
-> Validation: `./bench/examples/validate.sh Llama-3.1-8B` →
+> Validation: `./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B` →
 > TTFT MAPE 2.1% (was 2.3%), TPOT MAPE 1.7% (unchanged), throughput
 > 1.2% (was 1.4%).
 
-> Smoke: `python -m serving --cluster-config
-> single_node_single_instance.json --dataset example_trace.jsonl
-> --num-reqs 10` runs cleanly, output CSV has expected 10 rows.
+> Validation: `./serving/validate.sh` → all 58 scenarios match their
+> baselines, all 4 `sim.csv` byte-identical.
 
 This gives the reviewer something to rerun, and gives you (and
 future readers of the git log) a record of what was checked.
@@ -128,11 +175,21 @@ future readers of the git log) a record of what was checked.
 ## When the existing scenarios don't cover what you changed
 
 If your contribution adds a feature that no bundled scenario
-exercises, **add a new bundled scenario as part of the PR.** Drop
-a `configs/cluster/<your_scenario>.json` and add the matching line
-to `serving/run.sh`. This makes the feature reproducible for the
-next contributor and gives the reviewer something concrete to
-exercise.
+exercises, **add a scenario as part of the PR.** Add a line to the
+`SCENARIOS` list in `serving/validate.sh` (and a
+`configs/cluster/<your_scenario>.json` if no bundled config fits), then
+record its baseline with `./serving/validate.sh --update <name>` and commit
+both. That makes the feature reproducible for the next contributor instead
+of relying on them to think of it.
+
+Prefer a scenario that would *fail* without your change. A case whose clock
+matches an existing scenario exercises the flag's parsing and nothing else —
+check the new number differs from the closest existing one, and if it does
+not, find a configuration where the flag actually bites (turning the KV
+cache saturated with `--npu-memory-utilization` is usually enough).
+
+`serving/run.sh` is a menu of one example per feature, not a test suite —
+adding to it does not get your case validated.
 
 For features that need a custom workload (a new agentic dataset, a
 specific prompt distribution), commit a small JSONL under

@@ -35,7 +35,9 @@ git checkout -b add-deepseek-v3
 - **Don't amend published commits.** If you pushed it, follow up
   with a new commit. Force-pushing your branch is fine *before*
   review starts, generally not after.
-- **No `--no-verify`** to bypass pre-commit hooks. Fix what failed.
+- **There are no pre-commit hooks** in this repo, so nothing runs
+  automatically on commit and `--no-verify` has nothing to bypass. The
+  checks below are yours to run.
 - **No `Co-authored-by`** unless someone really did pair-program
   with you on this commit.
 
@@ -99,7 +101,7 @@ research question it lets you ask.
 
 The exact command(s) you ran and the key result. For example:
 
-  ./bench/examples/validate.sh Llama-3.1-8B
+  ./bench/examples/validate.sh RTXPRO6000/Llama-3.1-8B
   -> TTFT MAPE 2.1% (was 2.3%), TPOT 1.7% (unchanged)
 
 ## Notes
@@ -121,9 +123,9 @@ rerun and gives the git log a record of what was checked.
   [@hmchoi](https://github.com/hmchoi)) plus whoever owns the touched
   area. For docs-only PRs, one approval is enough.
 - **What gets blocked vs. nit-picked**:
-  - **Blockers**: bench regressions beyond ~5%, broken smoke run,
-    convention violations from the "never do this" list, missing
-    docs for new flags.
+  - **Blockers**: an unexplained `./serving/validate.sh` difference,
+    bench regressions beyond ~5%, convention violations from the
+    "never do this" list, missing docs for new flags.
   - **Nits**: naming, code style preferences, doc phrasing. The
     reviewer will say "nit:" or use the GitHub label. Address them
     if you agree; defer with a sentence if you don't.
@@ -146,12 +148,12 @@ External contributors get credit in two places:
 
 1. **GitHub commit history**: your authorship is preserved on
    merge.
-2. **README contributors list**: when your contribution is
-   user-visible (a new feature, a non-trivial fix, a new model or
-   hardware target), the maintainer adds a line to the
-   "Highlights" section of the README crediting you with a GitHub
-   handle link, following the existing `[@waneon]`,
-   `[@HyunsuYEE]`, `[@junwha]`, `[@gleb-kun]` pattern.
+2. **`CONTRIBUTORS.md`**: the maintainer adds a line with your
+   GitHub handle and a link to the PR or issue — under
+   "Code" for a merged patch, under "Reports and analysis" for an
+   issue that pinned down a real problem. Reports get their own
+   section rather than a footnote, and the changelog entry for the
+   fix names you too.
 
 You don't need to add yourself to the contributors list in your
 PR. The maintainer adds it on merge.
@@ -163,11 +165,11 @@ PR. The maintainer adds it on merge.
 - **Delete the merged branch** locally and on the remote
   (GitHub offers a button after merge; `git branch -d add-deepseek-v3`
   locally).
-- **Watch CI on `main` for a day or two**. If something broke that
-  the PR didn't catch, you're best positioned to fix it quickly.
-
-## When things go wrong
-
+- **Re-run your scenarios against `main` after the merge.** There is
+  no test CI to watch: the only workflow is `deploy-docs.yml`, which
+  builds the docs site and says nothing about the simulator. If
+  something broke that the review missed, the way you find out is by
+  running `./serving/validate.sh` on `main`.
 - **My PR sat for a week with no reviews.** Ping the PR with a
   one-liner. Maintainers do miss notifications.
 - **A reviewer requested changes I disagree with.** Explain your

@@ -24,7 +24,7 @@ without `--enable-attn-offloading`**.
 
 - Simulator container set up
 - Bundled RTXPRO6000 profile for `meta-llama/Llama-3.1-8B`
-- A PIM device config (`configs/pim/DDR4_8GB_3200_pim/`); the
+- A PIM device config (`configs/pim/DDR4_8GB_3200_pim.ini`); the
   bundled `single_node_pim_instance.json` already references it
 
 ## Cluster config
@@ -56,20 +56,31 @@ The two flags work together:
   half's GPU dense layers overlap with the other half's PIM
   attention.
 
+Interleaving requires `pp_size == 1`. The interleaved trace leaves
+both sub-batches part-way through a transformer block at every group
+edge, so a pipeline stage would have no single activation to hand to
+the next one; the simulator rejects the combination at startup rather
+than emitting a graph that cannot be scheduled.
+
 ## Expected output
 
-The throughput log shows both devices loaded:
+The heartbeat block is unchanged in shape:
 
 ```text
-[INFO] step=10 batch=8 prompt_t=1.4k tok/s decode_t=620 tok/s
-       npu_mem=63.4 GB pim_busy=78% gpu_busy=82%
-[INFO] step=11 batch=8 prompt_t=1.4k tok/s decode_t=640 tok/s
-       npu_mem=63.4 GB pim_busy=80% gpu_busy=80%
+[10.0s] Avg prompt throughput: 1436.0 tokens/s, Avg generation throughput: 620.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63412.51 MB (64.499 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 14360)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
+[11.0s] Avg prompt throughput: 1442.0 tokens/s, Avg generation throughput: 640.0 tokens/s
+        ├─Running Instance[0]: 8 reqs, Waiting: 0 reqs, Total # 1 NPUs, Each NPU Memory Usage 63486.51 MB (64.574 % Used), Prefix Cache Hit ratio 0.00 %, (0 / 15802)
+        └─Node[0]: Total CPU Memory Usage 0.00 MB, 0.000 % Used
 ```
 
-Compare against the pure-PIM run (without `--enable-sub-batch-interleaving`):
-the GPU previously had long idle stretches while waiting on PIM;
-now both `pim_busy` and `gpu_busy` plateau in the high 70s / 80s.
+There are **no `pim_busy` / `gpu_busy` fields** — the simulator tracks
+no device utilization counters. Interleaving overlaps the NPU and PIM
+halves of the iteration inside the emitted trace, so the only visible
+effect is a shorter iteration: higher generation throughput and lower
+TPOT than the same config without `--enable-sub-batch-interleaving`.
+Run both and compare the final `Mean TPOT (ms)` line.
 
 `outputs/pim_sub_batch_run.csv` has the same per-request schema as
 any other run; what changes is the per-iteration latency, not the

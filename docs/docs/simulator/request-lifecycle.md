@@ -113,12 +113,11 @@ requests to include in the next `Batch`. The constraints:
 - per-request `tokens_this_step <= --long-prefill-token-threshold`
   *(if set, gates chunked prefill)*
 
-There are two scheduling paths:
-
-- **Without prefix caching** (`schedule_base`): pure FIFO + token
-  budget.
-- **With prefix caching** (`schedule_with_prefix`): same plus
-  RadixCache lookup that returns `hit_len` for each request.
+One `schedule()` handles both, in two phases: running requests first
+(preempting from the tail of `running` when one cannot get a block), then
+admission from `waiting` while budget and slots remain. `--enable-prefix-caching`
+does not change the path — it only decides whether blocks get indexed for
+reuse, so a request may start from a `hit_len` above zero.
 
 The full mechanics are on
 **[Continuous batching](./scheduling/continuous-batching)**.
@@ -154,27 +153,29 @@ profile DB:
 - Dense layers (qkv, mlp, etc.) → 1D linear lookup over `total_len`.
 - Per-sequence layers (`lm_head`, `sampler`) → 1D over
   `num_requests`.
-- Attention → 4D nearest-neighbour + bilinear over
+- Attention → 4D linear over
   `(prefill_chunk, kv_prefill, n_decode, kv_decode)`. Skew correction
-  blends two lookups using a per-bucket `alpha`.
+  blends toward a second lookup using a per-bucket `alpha`, when one
+  applies.
 - MoE → 2D over `(local_tokens, activated_experts)`, profiled at
   TP=1.
 
-The output is a tab-separated text trace at
-`astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`.
-The text trace is an intermediate input to the Chakra converter and is
-removed after the `.et` graph is generated unless `--no-cleanup-inputs`
-is set.
+The output is a list of per-layer field tuples, handed straight to the
+Chakra converter. Pass `--save-trace-text` to also write it as a
+tab-separated text trace at
+`astra-sim/inputs/runs/<run_id>/trace/<hw>/<model>/instance_{i}_batch_{b}.txt`
+-- nothing in the pipeline reads that file, but it is the only
+human-readable form of what the simulator emitted.
 Full mechanics on **[Trace generation](./trace-generation)**.
 
 ## Stage 7, Converted to Chakra graph
 
-`graph_generator.generate_graph` shells out to Chakra's text→protobuf
-converter, producing
+`graph_generator.generate_graph` calls Chakra's converter in-process,
+handing it the trace rows, producing
 `astra-sim/inputs/runs/<run_id>/workload/<hw>/<model>/instance_{i}_batch_{b}/llm.et`.
-Chakra workloads remain available while ASTRA-Sim consumes them; the
-run directory is removed after a successful simulation unless
-`--no-cleanup-inputs` is set.
+An identical trace reuses the graph it already converted. Chakra workloads
+remain available while ASTRA-Sim consumes them; the run directory is removed
+after a successful simulation unless `--keep-inputs` is set.
 
 The Chakra converter creates:
 
@@ -207,11 +208,18 @@ wave-synchronizing them.
 
 - Updates per-request running totals (cycles spent in this iteration
   attributed to each request based on `q_list`).
-- For requests that finished decoding this step
-  (`request.num_computed_tokens >= request.input + request.output`):
-  records `last_token_time_ns`, computes `latency_ns`, marks done.
-- Returns `(prompt_throughput, decode_throughput, finished_requests)`
-  to the main loop.
+- A token counts as produced when the request has caught up to the
+  length it had already reached (`num_computed_tokens >=
+  num_tokens_reached`), at which point `num_tokens_reached` advances by
+  one. A resumed request recomputing its history stays silent until it
+  gets there, so recomputation is not double-counted as generation.
+- A request is finished when `num_tokens_reached >= request.output`,
+  where `output` is the **total** target length, prompt included. The
+  condition is deliberately *not* on `num_computed_tokens`, which
+  preemption resets to 0 — see
+  **[Continuous batching](./scheduling/continuous-batching)**.
+  `add_latency()` then stamps `end_time` and `latency`.
+- Returns `(prompt_t, gen_t, end_reqs)` to the main loop.
 
 For prefill instances (`pd_type="prefill"`), finished requests are
 **transferred** to a decode instance via
