@@ -27,6 +27,11 @@ from serving.core.router import *
 from serving.core.power_model import *
 from serving.core.logger import *
 from serving.core.run_paths import build_run_paths, resolve_run_id
+from serving.core.panel_backend import (
+    FabricSpec,
+    build_backend_args as build_panel_backend_args,
+    resolve_binary as resolve_panel_binary,
+)
 import sys as flush
 
 try:
@@ -372,9 +377,14 @@ def main():
                         help='KV cache data type: auto (inherit --dtype) or fp8. Selects the profile '
                         'variant folder -- fp8 resolves to <dtype>-kvfp8, e.g. bf16-kvfp8 -- and '
                         'halves KV cache memory. Override per instance with "kv_cache_dtype"')
-    parser.add_argument('--network-backend', type=str, choices=['analytical', 'ns3', 'htsim-shim'], default='analytical',
+    parser.add_argument('--network-backend', type=str, choices=['analytical', 'ns3', 'htsim', 'htsim-shim'], default='analytical',
                         help='network simulation backend: analytical (fast, default), ns3 (detailed, WIP), '
+                        'htsim (packet-level panel backend; needs --fabric-spec and the AstraSim_HTSim binary), '
                         'or htsim-shim (ASTRA-protocol stub for the HTSim backend; fixed cycles, protocol tests only)')
+    parser.add_argument('--fabric-spec', type=str, default=None,
+                        help='FabricSpec JSON for --network-backend htsim (physical panel fabric, rendered to --htsim_opts)')
+    parser.add_argument('--panel-backend-binary', type=str, default=None,
+                        help='AstraSim_HTSim binary for --network-backend htsim (default: $PANEL_ASTRA_HTSIM)')
 
     args = parser.parse_args()
     
@@ -439,6 +449,14 @@ def main():
     elif network_backend == 'ns3':
         network=_prepare_ns3_config(astra_sim, run_paths)
         binary=os.path.join(astra_sim, "extern/network_backend/ns-3/build/scratch/ns3.42-AstraSimNetwork-default")
+    elif network_backend == 'htsim':
+        # Packet-level panel backend (Panel-Scale-Systems' astra-sim fork in
+        # serving mode). Same stdin/stdout protocol; different launch arguments.
+        if args.fabric_spec is None:
+            raise ValueError("--network-backend htsim requires --fabric-spec")
+        network=run_paths.network_config
+        binary=resolve_panel_binary(args.panel_backend_binary)
+        fabric_spec=FabricSpec.load(args.fabric_spec)
     elif network_backend == 'htsim-shim':
         # Protocol stub: the frontend's own interpreter runs the shim in place of
         # an ASTRA-Sim binary. Returns fixed cycles; never use for performance runs.
@@ -446,7 +464,7 @@ def main():
         binary=flush.executable
         simulator_prefix=[os.path.join(cwd, "serving/core/htsim_astra_shim.py"), "--fixed-cycles=1234"]
     else:
-        raise NotImplementedError("Only analytical, ns3, and htsim-shim network backends are supported")
+        raise NotImplementedError("Only analytical, ns3, htsim, and htsim-shim network backends are supported")
     memory=run_paths.memory_config
     system=run_paths.system_config
     # ------------------------------------- Prepare simulation -------------------------------------
@@ -631,11 +649,18 @@ def main():
     # set first workload file
     workload = get_workload(None, None, event=True, inputs_root=run_paths.inputs_root)
     # run subprocess
-    astra_args = [binary] + simulator_prefix + ["--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
-    if start_npu_ids != "":
-        astra_args.append("--start-npu-ids="+start_npu_ids)
-    if end_npu_ids != "":
-        astra_args.append("--end-npu-ids="+end_npu_ids)
+    if network_backend == 'htsim':
+        # The panel backend names its flags differently and takes the fabric
+        # as an --htsim_opts tail; it also checks the fabric size against the
+        # logical NPU count before anything is launched.
+        astra_args = build_panel_backend_args(binary, fabric_spec, workload, system, network, memory,
+                                              start_npu_ids=start_npu_ids, end_npu_ids=end_npu_ids)
+    else:
+        astra_args = [binary] + simulator_prefix + ["--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
+        if start_npu_ids != "":
+            astra_args.append("--start-npu-ids="+start_npu_ids)
+        if end_npu_ids != "":
+            astra_args.append("--end-npu-ids="+end_npu_ids)
     if network_backend == 'ns3':
         astra_args.append("--logical-topology-configuration="+astra_sim+"/inputs/logical_topology/logical_8nodes_1D.json")
     # ns-3 writes enough to stderr to fill an undrained pipe and stall the run;

@@ -1,0 +1,19 @@
+{
+  "spec_version": 1,
+  "name": "hybrid-4d2o-n64-normalized",
+  "description": "8x8 torus + 2 OCS planes, N=64, at the physical anchor: 100 decimal GB/s per direction (-linkGiBps 93.132 under the GiB converter, Panel-Scale-Systems results/ANALYTICAL_PARITY.md), direct accelerator-to-accelerator path 25 ns, OCS path 55 ns whole-path (-planeLatencyNs). T_r=10 ns is a reconfiguration-time sensitivity assumption, not a product figure.",
+  "nodes": 64,
+  "panel": "hybrid",
+  "planes": 2,
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "planeLatencyNs": 55,
+  "policy": "directpref",
+  "ocs": true,
+  "reconfNs": 10,
+  "q": 90000,
+  "nocc": true,
+  "maxwin": 2097152,
+  "seed": 1,
+  "nolog": true
+}

@@ -1,0 +1,18 @@
+{
+  "spec_version": 1,
+  "name": "hybrid-4d2o-n64-historical",
+  "description": "8x8 torus + 2 OCS planes, N=64, in the retained campaign's historical-replay units: -linkGiBps 200 is 200 GiB/s (214.748 B/ns) per direction and -latencyNs 1000 is charged per link. Reproduces campaign rows; not the physical anchor.",
+  "nodes": 64,
+  "panel": "hybrid",
+  "planes": 2,
+  "linkGiBps": 200,
+  "latencyNs": 1000,
+  "policy": "directpref",
+  "ocs": true,
+  "reconfNs": 10,
+  "q": 90000,
+  "nocc": true,
+  "maxwin": 2097152,
+  "seed": 1,
+  "nolog": true
+}
