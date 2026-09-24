@@ -187,3 +187,13 @@ def test_network_config_is_flattened_to_one_dimension(tmp_path):
     assert flat["npus_count"] == [3] and flat["topology"] == ["FullyConnected"]
     assert flat["bandwidth"] == [16.0] and flat["latency"] == [20000.0]
     assert logical_npu_count(out) == 3
+
+
+def test_system_config_collective_lists_follow_the_flattened_network(tmp_path):
+    from serving.core.panel_backend import flatten_system_config
+    src = tmp_path / "system.json"
+    json.dump({"scheduling-policy": "LIFO", "all-reduce-implementation": ["ring", "ring"],
+               "all-gather-implementation": ["ring", "ring"], "local-mem-bw": 50}, open(src, "w"))
+    out = json.load(open(flatten_system_config(str(src))))
+    assert out["all-reduce-implementation"] == ["ring"] and out["all-gather-implementation"] == ["ring"]
+    assert out["local-mem-bw"] == 50 and out["scheduling-policy"] == "LIFO"

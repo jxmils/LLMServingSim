@@ -179,6 +179,26 @@ def flatten_network_config(network_config_path: str, out_path: Optional[str] = N
     return out_path
 
 
+def flatten_system_config(system_config_path: str, out_path: Optional[str] = None) -> str:
+    """Write the panel backend's copy of system.json with one network
+    dimension: the per-dimension collective implementation lists are cut to
+    their first entry to match the flattened network.yml (the system layer
+    asserts that they do not exceed the dimension count). The panel fabric
+    does not use these implementations' dimension structure."""
+    with open(system_config_path, "r", encoding="utf-8") as f:
+        sysc = json.load(f)
+    flat = dict(sysc)
+    for key, val in sysc.items():
+        if key.endswith("-implementation") and isinstance(val, list) and len(val) > 1:
+            flat[key] = [val[0]]
+    if out_path is None:
+        base, _ = os.path.splitext(system_config_path)
+        out_path = base + ".panel.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(flat, f, indent=2)
+    return out_path
+
+
 SEND_ADMISSION_MODES = ("serialized", "concurrent")
 
 
@@ -296,7 +316,7 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
             "--chakra-send-admission=" + chakra_send_admission,
             "--chakra-runtime-unit=ns",
             "--workload-configuration=" + workload,
-            "--system-configuration=" + system_config,
+            "--system-configuration=" + flatten_system_config(system_config),
             "--network-configuration=" + flatten_network_config(network_config),
             "--remote-memory-configuration=" + panel_memory]
     if start_npu_ids != "":
