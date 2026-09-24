@@ -1,0 +1,15 @@
+{
+  "spec_version": 1,
+  "name": "custom1-lone",
+  "description": "One endpoint and no links, for single-NPU scenarios (TP1: no collectives). Exercises the serving loop, preemption and re-admission paths of the frontend against the panel backend without a network.",
+  "nodes": 1,
+  "panel": "custom",
+  "graph": "custom1_lone.graph",
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "policy": "static",
+  "q": 4000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true
+}
