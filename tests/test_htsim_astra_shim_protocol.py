@@ -59,3 +59,20 @@ def test_stdin_workload_completion_protocol():
         "All Request Has Been Exited",
         "HTSim ASTRA shim exiting",
     ]
+
+
+def test_pass_with_deadline_and_state_change_protocol():
+    # Upstream a4053bc answers idle polls with "pass <tick>" (next known
+    # arrival) or "pass -1" (state-changed). Neither is a workload path.
+    proc = _run_shim("pass 12345\npass -1\ndone\nexit\n")
+
+    assert proc.returncode == 0
+    assert proc.stderr == ""
+    assert proc.stdout.splitlines() == [
+        "Waiting",
+        "Waiting",
+        "Waiting",
+        "Waiting",
+        "All Request Has Been Exited",
+        "HTSim ASTRA shim exiting",
+    ]
