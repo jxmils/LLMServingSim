@@ -1,0 +1,16 @@
+{
+  "spec_version": 1,
+  "name": "custom3-star",
+  "description": "Three endpoints on one switch for the prefill/decode disaggregation scenario (prefill TP1 + decode TP1 resolves to 3 logical NPUs). Normalized units, 2 MiB window, 90k-packet queue.",
+  "nodes": 3,
+  "panel": "custom",
+  "graph": "custom3_star.graph",
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "policy": "static",
+  "q": 90000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true,
+  "maxwin": 2097152
+}
