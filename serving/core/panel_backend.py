@@ -134,15 +134,27 @@ def logical_npu_count(network_config_path: str) -> int:
     return total
 
 
+SEND_ADMISSION_MODES = ("serialized", "concurrent")
+
+
 def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
                        system_config: str, network_config: str,
                        memory_config: str, start_npu_ids: str = "",
-                       end_npu_ids: str = "") -> List[str]:
+                       end_npu_ids: str = "",
+                       chakra_send_admission: str = "serialized") -> List[str]:
     """Full argv for the serving-mode panel backend.
+
+    `chakra_send_admission` is the backend's per-NPU send gate: "serialized"
+    (one in-flight Chakra send per NPU, ASTRA-Sim's HardwareResource default,
+    the setting every retained campaign row was produced under) or
+    "concurrent". The backend has no default and refuses to start without it.
 
     `--htsim_opts` must be last: the backend hands everything after it to the
     protocol implementation's own parser.
     """
+    if chakra_send_admission not in SEND_ADMISSION_MODES:
+        raise ValueError(f"chakra_send_admission must be one of {SEND_ADMISSION_MODES}, "
+                         f"got {chakra_send_admission!r}")
     logical = logical_npu_count(network_config)
     if logical != fabric.nodes:
         raise ValueError(
@@ -150,6 +162,7 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
             f"config resolves to {logical} logical NPUs ({network_config}); "
             "the packet backend cannot map ranks onto a fabric of a different size")
     args = [binary, "--serving",
+            "--chakra-send-admission=" + chakra_send_admission,
             "--workload-configuration=" + workload,
             "--system-configuration=" + system_config,
             "--network-configuration=" + network_config,

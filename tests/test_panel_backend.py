@@ -64,8 +64,11 @@ def test_backend_args_check_rank_count(tmp_path):
     spec = FabricSpec.load(_write(tmp_path, "f.json", HYBRID))
     args = build_backend_args("/bin/true", spec, "/w/llm", "/s.json", str(net),
                               "/m.json", start_npu_ids="0", end_npu_ids="63")
-    assert args[:2] == ["/bin/true", "--serving"]
+    assert args[:3] == ["/bin/true", "--serving", "--chakra-send-admission=serialized"]
     assert "--remote-memory-configuration=/m.json" in args
+    with pytest.raises(ValueError, match="chakra_send_admission"):
+        build_backend_args("/bin/true", spec, "/w/llm", "/s.json", str(net), "/m.json",
+                           chakra_send_admission="parallel")
     assert "--memory-configuration=/m.json" not in args
     assert args[args.index("--htsim_opts") - 1] == "--end-npu-ids=63"
     assert args[-1] == "-nolog"

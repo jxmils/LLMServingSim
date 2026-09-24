@@ -385,6 +385,9 @@ def main():
                         help='FabricSpec JSON for --network-backend htsim (physical panel fabric, rendered to --htsim_opts)')
     parser.add_argument('--panel-backend-binary', type=str, default=None,
                         help='AstraSim_HTSim binary for --network-backend htsim (default: $PANEL_ASTRA_HTSIM)')
+    parser.add_argument('--chakra-send-admission', type=str, choices=['serialized', 'concurrent'], default='serialized',
+                        help='panel backend per-NPU send gate (--network-backend htsim): serialized (one in-flight '
+                        'Chakra send per NPU, the retained campaigns\' setting) or concurrent')
 
     args = parser.parse_args()
     
@@ -654,7 +657,8 @@ def main():
         # as an --htsim_opts tail; it also checks the fabric size against the
         # logical NPU count before anything is launched.
         astra_args = build_panel_backend_args(binary, fabric_spec, workload, system, network, memory,
-                                              start_npu_ids=start_npu_ids, end_npu_ids=end_npu_ids)
+                                              start_npu_ids=start_npu_ids, end_npu_ids=end_npu_ids,
+                                              chakra_send_admission=args.chakra_send_admission)
     else:
         astra_args = [binary] + simulator_prefix + ["--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
         if start_npu_ids != "":
