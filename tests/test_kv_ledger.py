@@ -64,7 +64,8 @@ def test_write_ledger_files(tmp_path):
     npu.get_new_blocks(2)
     m.sample(100)
     summary = m.write_ledger(str(tmp_path), 0, end_ns=200)
-    assert set(summary) == {"inst0_npu", "inst0_cpu"}
+    assert set(summary) == {"inst0_npu", "inst0_cpu", "exit_check"}
+    assert summary["exit_check"]["inst0_npu"]["pinned_blocks"] == 2 and not summary["exit_check"]["inst0_npu"]["all_free"]
     assert summary["inst0_npu"]["reserved_byte_ns"] == 2 * 1024 * 100
     assert (tmp_path / "inst0_npu.csv").read_text().splitlines()[0].startswith("t_ns,free_blocks,reserved_blocks")
     assert m.check_conservation()
