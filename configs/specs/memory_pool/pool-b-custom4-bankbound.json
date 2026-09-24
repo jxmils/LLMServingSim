@@ -1,0 +1,23 @@
+{
+  "spec_version": 1,
+  "name": "pool-b-custom4-bankbound",
+  "description": "Same pool as pool-a-custom4 but with a 50 GB/s bank behind the 100 GB/s attachment port, so four concurrent 64 MiB transfers are bank-bound (G5 fixture 1: completion follows the bank rate, not the links).",
+  "access_mode": "staging",
+  "allocation_granularity_bytes": 65536,
+  "devices": [
+    {
+      "id": "pool0",
+      "capacity_gib": 512,
+      "bank_service_gbps": 50,
+      "controller_latency_ns": 300,
+      "attachments": [
+        {
+          "via": "switch:4",
+          "link_gbps": 100,
+          "link_latency_ns": 25
+        }
+      ],
+      "queue_depth_pkts": 4000
+    }
+  ]
+}

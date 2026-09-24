@@ -1,0 +1,15 @@
+{
+  "access_mode": "staging",
+  "pools": [
+    {
+      "id": "pool0",
+      "endpoint": 6,
+      "bank": 7,
+      "capacity_bytes": 549755813888,
+      "allocation_granularity_bytes": 65536
+    }
+  ],
+  "tensor_loc_pool": {
+    "CXL": "pool0"
+  }
+}
