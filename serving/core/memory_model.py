@@ -2,6 +2,7 @@ import os
 from .utils import get_config
 from .block_pool import Device, BlockPool, PrefixCacheStats
 from .kv_cache_manager import TieredKVCacheManager, request_block_hashes
+from .kv_layout import KVLayout
 from .logger import get_logger
 
 GB_TO_BYTE = 1024 * 1024 * 1024
@@ -53,6 +54,7 @@ class MemoryModel():
         self.kv_head = self.config.get("num_key_value_heads", self.n_head)  # fallback to n_head if not defined
         self.q_dim = self.n_head * self.head_dim       # total Q projection output dim
         self.kv_dim = self.kv_head * self.head_dim     # total KV projection output dim
+        self.kv_layout = KVLayout.from_config(self.config, self.kv_fp)
         self.vocab_size = self.config['vocab_size']
         # Accept either the Mistral-style ``num_local_experts`` or the
         # HF/Qwen-style ``num_experts`` key — profiler configs track
@@ -207,12 +209,12 @@ class MemoryModel():
     # -------------------- KV sizing math --------------------
 
     def get_kv(self, seq):
-        # shape of kv cache
-        # (kv_head, batch_size, n_embd//n_head, seq_len) per layer
-        # return batch_size = 1 to caclulate max batch_size in scheduler
-
-        # K & V multiply 2
-        return 2 * self.kv_dim * seq * self.n_layer * self.kv_fp // self.num_npus
+        # KV bytes `seq` tokens occupy on one rank: the KV heads resident on
+        # this rank (vLLM replicates a head when tp exceeds the KV-head count)
+        # times this pipeline stage's layers. Dividing the model-wide KV by
+        # num_npus is exact only while tp divides kv_head; at tp=64 on a
+        # 4-KV-head model it understated per-rank KV 16x. See kv_layout.py.
+        return self.kv_layout.bytes_per_token(seq, self.tp_size, self.pp_size)
 
     def get_total_kv(self, req):
         """Bytes of KV a request's whole computed context occupies, per rank.
@@ -232,7 +234,7 @@ class MemoryModel():
         more at wider GQA ratios. It also honours ``kv_cache_dtype``, which the
         activation size did not.
         """
-        return 2 * self.kv_dim * num_tokens * self.n_layer * self.kv_fp // self.tp_size
+        return self.kv_layout.bytes_per_token(num_tokens, self.tp_size, 1)
 
     def free_weight(self):
         if self._npu_reserved - self.weight < 0:
@@ -448,8 +450,12 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     )
 
     p = max(int(parallel), 1)
+    # Per-rank Q/KV widths: heads are sharded over the parallel degree and a
+    # KV head is replicated once the degree exceeds the KV-head count (vLLM).
+    # Equal to (q_dim + 2*kv_dim) // p whenever p divides both head counts.
+    q_local = (n_head // p) * head_dim
+    kv_local = max(kv_head // p, 1) * head_dim
 
-    # NOTE (vLLM-style assumptions):
     # NOTE (vLLM-style assumptions):
     # - Embedding / LM head: vocab-parallel → split vocab_size across ranks.
     # - Q/K/V: ColumnParallelLinear         → split output dim across ranks.
@@ -469,37 +475,37 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         output_size = length * n_embd * fp
 
     elif layer_name == "qk_norm":
-        input_size = length * (q_dim + kv_dim) // p * fp
+        input_size = length * (q_local + kv_local) * fp
         weight_size = 2 * head_dim * fp
-        output_size = length * (q_dim + kv_dim) // p * fp
+        output_size = length * (q_local + kv_local) * fp
 
     # ----------------- RoPE & Attention Core -----------------
     elif layer_name == "rotary_emb":
-        input_size = ((n_head // p) + (kv_head // p)) * length * head_dim * fp
+        input_size = (q_local + kv_local) * length * fp
         weight_size = 0
-        output_size = ((n_head // p) + (kv_head // p)) * length * head_dim * fp
+        output_size = (q_local + kv_local) * length * fp
 
     elif layer_name == "attention":
         if not pim:
             input_size = (
-                (n_head // p) * length * head_dim * fp +
-                (kv_head // p) * kv_len * head_dim * fp * 2
+                q_local * length * fp +
+                kv_local * kv_len * fp * 2
             )
             weight_size = 0
-            output_size = (n_head // p) * length * head_dim * fp
+            output_size = q_local * length * fp
         else:
             input_size = (
-                (n_head // p) * 1 * head_dim * fp +
-                (kv_head // p) * 1 * head_dim * fp * 2
+                q_local * 1 * fp +
+                kv_local * 1 * fp * 2
             )
             weight_size = 0
-            output_size = (n_head // p) * 1 * head_dim * fp
+            output_size = q_local * 1 * fp
 
     # ----------------- QKV Projection (fused) -----------------
     elif layer_name == "qkv_proj":
         input_size = length * n_embd * fp
-        weight_size = n_embd * ((q_dim + 2 * kv_dim) // p) * fp
-        output_size = length * ((q_dim + 2 * kv_dim) // p) * fp
+        weight_size = n_embd * (q_local + 2 * kv_local) * fp
+        output_size = length * (q_local + 2 * kv_local) * fp
 
     elif layer_name == "o_proj":
         input_size = length * (q_dim // p) * fp

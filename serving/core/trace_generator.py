@@ -1055,8 +1055,10 @@ def _pd_kv_send_bytes(ctx, bctx):
     tokens = getattr(bctx.batch, 'pd_kv_send_tokens', 0) or 0
     if tokens <= 0:
         return 0
-    kv_dim = ctx.kv_head * ctx.head_dim
-    return 2 * kv_dim * tokens * ctx.kv_fp // max(ctx.tp_size, 1)
+    # KV heads resident on this rank (replicated when tp exceeds kv_head), not
+    # the model-wide KV divided by tp; equal while tp divides kv_head.
+    kv_local = max(ctx.kv_head // max(ctx.tp_size, 1), 1) * ctx.head_dim
+    return 2 * kv_local * tokens * ctx.kv_fp
 
 
 def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
