@@ -112,6 +112,8 @@ def load_spec(kind: str, path: str) -> Spec:
         _check_hardware(raw, path)
     if kind == "model":
         _check_model(raw, path)
+    if kind == "memory_pool":
+        _check_memory_pool(raw, path)
     return Spec(kind=kind, name=str(raw.get("name", os.path.basename(path))),
                 data=raw, source=os.path.abspath(path), sha256=_sha256(path))
 
@@ -130,6 +132,33 @@ def _check_hardware(raw: dict, path: str) -> None:
         if not isinstance(inc.get(key), bool):
             raise ValueError(f"{path}: hardware.timings_include.{key} must be true/false "
                              "(the backend must not charge these twice)")
+
+
+def _check_memory_pool(raw: dict, path: str) -> None:
+    """A pool is a physical endpoint with a capacity model and an access-cost
+    model (plan §6): capacity, bank service rate, controller latency and at
+    least one attachment to the fabric with its own link rate."""
+    mode = raw.get("access_mode", "staging")
+    if mode != "staging":
+        raise ValueError(f"{path}: memory_pool.access_mode {mode!r} is not implemented (staging only)")
+    devices = raw["devices"]
+    if not isinstance(devices, list) or not devices:
+        raise ValueError(f"{path}: memory_pool.devices must be a non-empty list")
+    seen = set()
+    for dev in devices:
+        for key in ("id", "capacity_gib", "bank_service_gbps", "attachments"):
+            if key not in dev:
+                raise ValueError(f"{path}: memory_pool device needs {key}")
+        if dev["id"] in seen:
+            raise ValueError(f"{path}: duplicate memory_pool device id {dev['id']!r}")
+        seen.add(dev["id"])
+        if float(dev["capacity_gib"]) <= 0 or float(dev["bank_service_gbps"]) <= 0:
+            raise ValueError(f"{path}: memory_pool device {dev['id']} needs positive capacity and bank rate")
+        if not dev["attachments"]:
+            raise ValueError(f"{path}: memory_pool device {dev['id']} needs at least one attachment")
+        for att in dev["attachments"]:
+            if "via" not in att or "link_gbps" not in att:
+                raise ValueError(f"{path}: memory_pool attachment needs via and link_gbps")
 
 
 def _check_model(raw: dict, path: str) -> None:

@@ -1,0 +1,19 @@
+{
+  "spec_version": 1,
+  "name": "pool-a-custom4",
+  "description": "One remote memory pool for the four-endpoint custom fixtures (G5 fixtures 1-2, 4): 512 GiB, bank service 400 GB/s behind a 300 ns controller, attached to switch 4 over one 100 GB/s port. The bank rate is below the sum of the attachment links of four ranks so pool-overload is bank-bound.",
+  "access_mode": "staging",
+  "allocation_granularity_bytes": 65536,
+  "devices": [
+    {
+      "id": "pool0",
+      "capacity_gib": 512,
+      "bank_service_gbps": 400,
+      "controller_latency_ns": 300,
+      "attachments": [
+        {"via": "switch:4", "link_gbps": 100, "link_latency_ns": 25}
+      ],
+      "queue_depth_pkts": 4000
+    }
+  ]
+}

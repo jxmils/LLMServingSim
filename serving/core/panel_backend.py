@@ -56,6 +56,9 @@ _FLAG_OPTS = (
 )
 _KNOWN_KEYS = {k for k, _ in _SCALAR_OPTS} | {k for k, _ in _FLAG_OPTS} | {
     "spec_version", "name", "nodes", "extra", "description", "source",
+    # written by compose_fabric.py: the MemoryPoolSpec this graph was composed
+    # with; the backend's pool configuration is the sibling <spec>.pool.json
+    "memory_pool_spec",
 }
 _FILE_KEYS = ("topo", "graph", "ocsplan")
 
@@ -191,6 +194,21 @@ def translate_memory_config(frontend_path: str, num_nodes: int, npus_per_node: i
     return out_path
 
 
+def pool_configuration_path(fabric: FabricSpec) -> Optional[str]:
+    """The backend's memory-pool configuration for a fabric composed with a
+    MemoryPoolSpec (compose_fabric.py writes it next to the spec as
+    <spec>.pool.json); None for a fabric without a pool."""
+    if not fabric.options.get("memory_pool_spec"):
+        return None
+    if not fabric.source:
+        raise ValueError("a fabric with memory_pool_spec must be loaded from a file")
+    path = os.path.splitext(fabric.source)[0] + ".pool.json"
+    if not os.path.isfile(path):
+        raise ValueError(f"fabric {fabric.name} names a memory pool spec but {path} is missing; "
+                         "rerun serving/tools/compose_fabric.py")
+    return path
+
+
 def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
                        system_config: str, network_config: str,
                        memory_config: str, start_npu_ids: str = "",
@@ -237,6 +255,11 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
         args.append("--start-npu-ids=" + start_npu_ids)
     if end_npu_ids != "":
         args.append("--end-npu-ids=" + end_npu_ids)
+    pool_cfg = pool_configuration_path(fabric)
+    if pool_cfg:
+        # Pool MEM_LOAD/MEM_STORE nodes become flows to/from the pool's bank
+        # device; REMOTE (CPU) locations keep the analytical remote memory.
+        args.append("--memory-pool-configuration=" + pool_cfg)
     args += fabric.htsim_opts()
     return args
 
