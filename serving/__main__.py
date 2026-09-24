@@ -459,7 +459,11 @@ def main():
             raise ValueError("--network-backend htsim requires --fabric-spec")
         network=run_paths.network_config
         binary=resolve_panel_binary(args.panel_backend_binary)
-        fabric_spec=FabricSpec.load(args.fabric_spec)
+        # cwd is already astra-sim/ here; a repo-relative spec path is
+        # resolved against the directory the command was started from.
+        fabric_spec_path = args.fabric_spec if os.path.isabs(args.fabric_spec) \
+            else os.path.join(cwd, args.fabric_spec)
+        fabric_spec=FabricSpec.load(fabric_spec_path)
     elif network_backend == 'htsim-shim':
         # Protocol stub: the frontend's own interpreter runs the shim in place of
         # an ASTRA-Sim binary. Returns fixed cycles; never use for performance runs.
@@ -658,7 +662,8 @@ def main():
         # logical NPU count before anything is launched.
         astra_args = build_panel_backend_args(binary, fabric_spec, workload, system, network, memory,
                                               start_npu_ids=start_npu_ids, end_npu_ids=end_npu_ids,
-                                              chakra_send_admission=args.chakra_send_admission)
+                                              chakra_send_admission=args.chakra_send_admission,
+                                              num_nodes=num_nodes)
     else:
         astra_args = [binary] + simulator_prefix + ["--workload-configuration="+workload, "--system-configuration="+system, "--network-configuration="+network, "--memory-configuration="+memory]
         if start_npu_ids != "":

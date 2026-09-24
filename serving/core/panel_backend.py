@@ -57,6 +57,7 @@ _FLAG_OPTS = (
 _KNOWN_KEYS = {k for k, _ in _SCALAR_OPTS} | {k for k, _ in _FLAG_OPTS} | {
     "spec_version", "name", "nodes", "extra", "description", "source",
 }
+_FILE_KEYS = ("topo", "graph", "ocsplan")
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,19 @@ class FabricSpec:
             raw = json.load(f)
         if raw.get("spec_version") != 1:
             raise ValueError(f"{path}: FabricSpec spec_version must be 1")
+        # File-valued flags: expand ${VAR} and resolve relative to the spec
+        # file, so a spec can point at a fixture in another checkout
+        # (${PANEL_ROOT}/src/topos/...) without an absolute path in the repo.
+        spec_dir = os.path.dirname(os.path.abspath(path))
+        for key in _FILE_KEYS:
+            value = raw.get(key)
+            if isinstance(value, str):
+                value = os.path.expandvars(value)
+                if not os.path.isabs(value):
+                    value = os.path.join(spec_dir, value)
+                if not os.path.exists(value):
+                    raise FileNotFoundError(f"{path}: {key} file not found: {value}")
+                raw[key] = value
         unknown = sorted(set(raw) - _KNOWN_KEYS)
         if unknown:
             # Refuse rather than drop: a misspelt flag would silently change
@@ -137,11 +151,52 @@ def logical_npu_count(network_config_path: str) -> int:
 SEND_ADMISSION_MODES = ("serialized", "concurrent")
 
 
+def translate_memory_config(frontend_path: str, num_nodes: int, npus_per_node: int,
+                            out_path: Optional[str] = None) -> str:
+    """Write the panel backend's remote-memory config from the frontend's.
+
+    config_builder emits the casys-kaist multi-level layout
+    (`{"remote_mem": {"memory-type", "mem-bw", "mem-latency", "num-devices"},
+    "cxl_mem": ..., "local_mem": ...}`); the panel's AnalyticalRemoteMemory
+    reads upstream ASTRA-Sim's flat layout (`memory-type`, `num-nodes`,
+    `num-npus-per-node`, `remote-mem-latency`, `remote-mem-bw`). Bandwidth
+    is GB/s and latency ns in both. Only the CPU (remote) tier exists on the
+    panel side in G2: a config with `cxl_mem`, `local_mem` or PIM channels
+    is refused rather than silently flattened.
+    """
+    with open(frontend_path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    unsupported = [k for k in ("cxl_mem", "local_mem") if k in raw]
+    if unsupported:
+        raise ValueError(f"{frontend_path}: memory tiers {unsupported} are not supported by the "
+                         "panel backend (G2 models the CPU/remote tier only)")
+    remote = raw.get("remote_mem")
+    if remote is None:
+        out = {"memory-type": "NO_MEMORY_EXPANSION"}
+    else:
+        if "pim-channels" in remote:
+            raise ValueError(f"{frontend_path}: PIM channels are not supported by the panel backend")
+        out = {
+            "memory-type": remote.get("memory-type", "PER_NODE_MEMORY_EXPANSION"),
+            "num-nodes": int(remote.get("num-devices", num_nodes)),
+            "num-npus-per-node": int(npus_per_node),
+            "remote-mem-latency": remote["mem-latency"],
+            "remote-mem-bw": remote["mem-bw"],
+        }
+    if out_path is None:
+        base, _ = os.path.splitext(frontend_path)
+        out_path = base + ".panel.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2)
+    return out_path
+
+
 def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
                        system_config: str, network_config: str,
                        memory_config: str, start_npu_ids: str = "",
                        end_npu_ids: str = "",
-                       chakra_send_admission: str = "serialized") -> List[str]:
+                       chakra_send_admission: str = "serialized",
+                       num_nodes: int = 1) -> List[str]:
     """Full argv for the serving-mode panel backend.
 
     `chakra_send_admission` is the backend's per-NPU send gate: "serialized"
@@ -161,12 +216,15 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
             f"FabricSpec {fabric.name} has {fabric.nodes} nodes but the cluster "
             f"config resolves to {logical} logical NPUs ({network_config}); "
             "the packet backend cannot map ranks onto a fabric of a different size")
+    if num_nodes <= 0 or logical % num_nodes != 0:
+        raise ValueError(f"num_nodes={num_nodes} does not divide the {logical} logical NPUs")
+    panel_memory = translate_memory_config(memory_config, num_nodes, logical // num_nodes)
     args = [binary, "--serving",
             "--chakra-send-admission=" + chakra_send_admission,
             "--workload-configuration=" + workload,
             "--system-configuration=" + system_config,
             "--network-configuration=" + network_config,
-            "--remote-memory-configuration=" + memory_config]
+            "--remote-memory-configuration=" + panel_memory]
     if start_npu_ids != "":
         args.append("--start-npu-ids=" + start_npu_ids)
     if end_npu_ids != "":

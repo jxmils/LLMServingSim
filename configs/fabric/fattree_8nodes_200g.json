@@ -1,0 +1,10 @@
+{
+  "spec_version": 1,
+  "name": "fattree-8nodes-200g",
+  "description": "The panel backend's standing-regression fixture: 8 endpoints on the legacy fat-tree path (no -panel), 200 Gbps links, Bundle 4, -q 4000 -nocc -seed 1 (HTSIM_DEV_GUIDE.md sec. 10: 64 MiB AllReduce = 5,216,258 ns). Used for the G2 end-to-end fixtures; not a panel fabric.",
+  "nodes": 8,
+  "topo": "${PANEL_ROOT}/src/topos/8nodes_200g.topo",
+  "q": 4000,
+  "nocc": true,
+  "seed": 1
+}

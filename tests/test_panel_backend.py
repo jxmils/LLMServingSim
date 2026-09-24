@@ -10,7 +10,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from serving.core.panel_backend import (  # noqa: E402
     FabricSpec, build_backend_args, logical_npu_count, resolve_binary,
+    translate_memory_config,
 )
+
+FRONTEND_MEMORY = {"remote_mem": {"memory-type": "PER_NODE_MEMORY_EXPANSION",
+                                  "mem-bw": 256, "mem-latency": 0, "num-devices": 1}}
 
 
 def _write(tmp_path, name, obj):
@@ -61,21 +65,58 @@ def test_backend_args_check_rank_count(tmp_path):
     net.write_text("topology: [FullyConnected, FullyConnected]\nnpus_count: [8, 8]\n"
                    "bandwidth: [200, 200]\nlatency: [500, 500]\n", encoding="utf-8")
     assert logical_npu_count(str(net)) == 64
+    mem = _write(tmp_path, "memory_expansion.json", FRONTEND_MEMORY)
     spec = FabricSpec.load(_write(tmp_path, "f.json", HYBRID))
     args = build_backend_args("/bin/true", spec, "/w/llm", "/s.json", str(net),
-                              "/m.json", start_npu_ids="0", end_npu_ids="63")
+                              mem, start_npu_ids="0", end_npu_ids="63")
     assert args[:3] == ["/bin/true", "--serving", "--chakra-send-admission=serialized"]
-    assert "--remote-memory-configuration=/m.json" in args
+    panel_mem = str(tmp_path / "memory_expansion.panel.json")
+    assert "--remote-memory-configuration=" + panel_mem in args
+    assert not any(a.startswith("--memory-configuration=") for a in args)
     with pytest.raises(ValueError, match="chakra_send_admission"):
-        build_backend_args("/bin/true", spec, "/w/llm", "/s.json", str(net), "/m.json",
+        build_backend_args("/bin/true", spec, "/w/llm", "/s.json", str(net), mem,
                            chakra_send_admission="parallel")
-    assert "--memory-configuration=/m.json" not in args
     assert args[args.index("--htsim_opts") - 1] == "--end-npu-ids=63"
     assert args[-1] == "-nolog"
 
     wrong = FabricSpec.load(_write(tmp_path, "g.json", dict(HYBRID, nodes=16)))
     with pytest.raises(ValueError, match="16 nodes but the cluster config resolves to 64"):
-        build_backend_args("/bin/true", wrong, "/w/llm", "/s.json", str(net), "/m.json")
+        build_backend_args("/bin/true", wrong, "/w/llm", "/s.json", str(net), mem)
+
+
+def test_memory_config_translation(tmp_path):
+    src = _write(tmp_path, "memory_expansion.json", FRONTEND_MEMORY)
+    out = translate_memory_config(src, num_nodes=1, npus_per_node=8)
+    assert out == str(tmp_path / "memory_expansion.panel.json")
+    assert json.loads(open(out).read()) == {
+        "memory-type": "PER_NODE_MEMORY_EXPANSION", "num-nodes": 1,
+        "num-npus-per-node": 8, "remote-mem-latency": 0, "remote-mem-bw": 256,
+    }
+    none = _write(tmp_path, "none.json", {})
+    assert json.loads(open(translate_memory_config(none, 1, 8)).read()) == {
+        "memory-type": "NO_MEMORY_EXPANSION"}
+    for extra in ("cxl_mem", "local_mem"):
+        bad = _write(tmp_path, f"{extra}.json", dict(FRONTEND_MEMORY, **{extra: {"mem-bw": 1}}))
+        with pytest.raises(ValueError, match="not supported"):
+            translate_memory_config(bad, 1, 8)
+    pim = dict(remote_mem=dict(FRONTEND_MEMORY["remote_mem"], **{"pim-channels": 4}))
+    with pytest.raises(ValueError, match="PIM"):
+        translate_memory_config(_write(tmp_path, "pim.json", pim), 1, 8)
+
+
+def test_file_keys_resolve_relative_and_env(tmp_path, monkeypatch):
+    (tmp_path / "fx").mkdir()
+    (tmp_path / "fx" / "t.topo").write_text("Nodes 8\n", encoding="utf-8")
+    monkeypatch.setenv("FIXTURES", str(tmp_path / "fx"))
+    spec = FabricSpec.load(_write(tmp_path, "f.json", {
+        "spec_version": 1, "nodes": 8, "topo": "${FIXTURES}/t.topo"}))
+    assert spec.options["topo"] == str(tmp_path / "fx" / "t.topo")
+    spec = FabricSpec.load(_write(tmp_path, "g.json", {
+        "spec_version": 1, "nodes": 8, "topo": "fx/t.topo"}))
+    assert spec.options["topo"] == str(tmp_path / "fx" / "t.topo")
+    with pytest.raises(FileNotFoundError, match="topo file not found"):
+        FabricSpec.load(_write(tmp_path, "h.json", {
+            "spec_version": 1, "nodes": 8, "topo": "missing.topo"}))
 
 
 def test_resolve_binary_requires_a_path(monkeypatch):
