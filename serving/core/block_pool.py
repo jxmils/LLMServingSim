@@ -42,6 +42,29 @@ class Device(Enum):
     CXL = 3
 
 
+class BlockState(Enum):
+    """Ledger state of one block (serving-integration plan sec. 6).
+
+    FREE        holds nothing; capacity available.
+    RESERVED    pinned for a request; capacity charged; not yet written.
+    IN_TRANSFER pinned; its bytes are being moved in from another tier (a
+                staging load in the batch now executing); not readable yet.
+    REFERENCED  resident and pinned by at least one request.
+    EVICTABLE   resident, unpinned, still indexed by hash (reusable data).
+    Reservation, residency and use are tracked separately: a request charges
+    capacity at RESERVED, may read at REFERENCED, and its data survives it at
+    EVICTABLE until the free list reuses the block.
+    """
+    FREE = 0
+    RESERVED = 1
+    IN_TRANSFER = 2
+    REFERENCED = 3
+    EVICTABLE = 4
+
+
+RESIDENT_STATES = (BlockState.REFERENCED, BlockState.EVICTABLE)
+
+
 # Seed of the chained block-hash. vLLM draws this from ``os.urandom`` unless
 # PYTHONHASHSEED is set; the simulator must be reproducible run to run, so it is
 # a fixed constant.
@@ -55,12 +78,13 @@ class KVCacheBlock:
     :class:`FreeKVCacheBlockQueue`; nothing else may touch them.
     """
 
-    __slots__ = ("block_id", "ref_cnt", "block_hash",
+    __slots__ = ("block_id", "ref_cnt", "block_hash", "state",
                  "prev_free_block", "next_free_block")
 
     def __init__(self, block_id):
         self.block_id = block_id
         self.ref_cnt = 0
+        self.state = BlockState.FREE
         # Set only while the block is full and indexed for prefix caching.
         self.block_hash = None
         self.prev_free_block = None
@@ -246,6 +270,84 @@ class BlockPool:
 
         self.stats = PrefixCacheStats()
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
+        # Ledger: block count per state (sums to num_blocks by construction)
+        # and its time series, sampled by the scheduler at every event.
+        self._state_count = {s: 0 for s in BlockState}
+        self._state_count[BlockState.FREE] = num_blocks
+        self.ledger = []          # (t_ns, counts tuple in BlockState order)
+        self._last_counts = None
+
+    # -------------------- ledger --------------------
+
+    def _set_state(self, block, state):
+        if block.state is state:
+            return
+        self._state_count[block.state] -= 1
+        self._state_count[state] += 1
+        block.state = state
+
+    def state_counts(self):
+        return dict(self._state_count)
+
+    def bytes_by_state(self):
+        return {s: n * self.bytes_per_block for s, n in self._state_count.items()}
+
+    def sample(self, t_ns):
+        """Append the current state vector at ``t_ns`` if it changed."""
+        counts = tuple(self._state_count[s] for s in BlockState)
+        if self.ledger and self.ledger[-1][0] > t_ns:
+            return   # out-of-order clocks (PP stages) never rewrite history
+        if counts != self._last_counts:
+            self.ledger.append((t_ns, counts))
+            self._last_counts = counts
+        elif self.ledger:
+            self.ledger[-1] = (self.ledger[-1][0], counts) if self.ledger[-1][0] == t_ns else self.ledger[-1]
+
+    def mark_written(self, blocks):
+        """The batch that computes or transfers these blocks has completed:
+        RESERVED / IN_TRANSFER become REFERENCED (resident and pinned)."""
+        for block in blocks:
+            if block.state in (BlockState.RESERVED, BlockState.IN_TRANSFER):
+                self._set_state(block, BlockState.REFERENCED)
+
+    def mark_in_transfer(self, blocks):
+        for block in blocks:
+            if block.state is BlockState.RESERVED:
+                self._set_state(block, BlockState.IN_TRANSFER)
+
+    def ledger_integrals(self, end_ns=None):
+        """Byte-time integrals over the sampled series (plan sec. 6):
+        reserved-not-resident, in-transfer, resident-unreferenced."""
+        out = {"reserved_byte_ns": 0.0, "in_transfer_byte_ns": 0.0, "evictable_byte_ns": 0.0,
+               "referenced_byte_ns": 0.0, "samples": len(self.ledger)}
+        if not self.ledger:
+            return out
+        pts = list(self.ledger)
+        if end_ns is not None and end_ns > pts[-1][0]:
+            pts.append((end_ns, pts[-1][1]))
+        idx = {s: i for i, s in enumerate(BlockState)}
+        for (t0, c), (t1, _) in zip(pts, pts[1:]):
+            dt = t1 - t0
+            out["reserved_byte_ns"] += c[idx[BlockState.RESERVED]] * self.bytes_per_block * dt
+            out["in_transfer_byte_ns"] += c[idx[BlockState.IN_TRANSFER]] * self.bytes_per_block * dt
+            out["evictable_byte_ns"] += c[idx[BlockState.EVICTABLE]] * self.bytes_per_block * dt
+            out["referenced_byte_ns"] += c[idx[BlockState.REFERENCED]] * self.bytes_per_block * dt
+        return out
+
+    def check_conservation(self):
+        """Every block is in exactly one state and the counts sum to the
+        capacity; pinned/hashed flags agree with the state."""
+        total = sum(self._state_count.values())
+        if total != self.num_blocks:
+            raise RuntimeError(f"[BlockPool] {self.tier}: state counts sum to {total} != {self.num_blocks}")
+        for b in self.blocks:
+            if b.ref_cnt > 0 and b.state not in (BlockState.RESERVED, BlockState.IN_TRANSFER, BlockState.REFERENCED):
+                raise RuntimeError(f"[BlockPool] {self.tier}: pinned block {b.block_id} in state {b.state}")
+            if b.ref_cnt == 0 and b.state in (BlockState.RESERVED, BlockState.IN_TRANSFER, BlockState.REFERENCED):
+                raise RuntimeError(f"[BlockPool] {self.tier}: unpinned block {b.block_id} in state {b.state}")
+            if b.ref_cnt == 0 and b.block_hash is not None and b.state is not BlockState.EVICTABLE:
+                raise RuntimeError(f"[BlockPool] {self.tier}: hashed unpinned block {b.block_id} in state {b.state}")
+        return True
 
     # -------------------- prefix cache index --------------------
 
@@ -326,6 +428,8 @@ class BlockPool:
                     f"has ref_cnt={block.ref_cnt}, expected 0"
                 )
             block.ref_cnt += 1
+            # capacity is charged now; the data arrives with the batch
+            self._set_state(block, BlockState.RESERVED)
         return blocks
 
     def _maybe_evict_cached_block(self, block):
@@ -351,6 +455,8 @@ class BlockPool:
             if block.ref_cnt == 0:
                 self.free_block_queue.remove(block)
             block.ref_cnt += 1
+            if block.state is BlockState.EVICTABLE:
+                self._set_state(block, BlockState.REFERENCED)   # a hit: already resident
 
     def free_blocks(self, ordered_blocks):
         """Release blocks, keeping their hashes so they stay findable.
@@ -366,6 +472,10 @@ class BlockPool:
                     f"with ref_cnt={block.ref_cnt}"
                 )
             block.ref_cnt -= 1
+            if block.ref_cnt == 0:
+                # data survives an unpinned block only while it stays indexed
+                self._set_state(block, BlockState.EVICTABLE if block.block_hash is not None
+                                else BlockState.FREE)
         self.free_block_queue.append_n([b for b in blocks if b.ref_cnt == 0])
 
     # -------------------- accounting --------------------
@@ -406,6 +516,7 @@ class BlockPool:
         for block in self.blocks:
             block.ref_cnt = 0
             block.reset_hash()
+            self._set_state(block, BlockState.FREE)
         self.free_block_queue = FreeKVCacheBlockQueue(self.blocks)
 
     def __repr__(self):

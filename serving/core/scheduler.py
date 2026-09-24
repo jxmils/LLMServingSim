@@ -90,6 +90,7 @@ class Scheduler:
     def schedule(self, current, sys, batch_id=-1):
         if sys != self.start_npu:
             return self._schedule_existing(sys, batch_id)
+        self.kv.sample(current)
 
         # The start NPU is a joiner too, and it has to try joining *before* the
         # pipeline-depth cap below. With DP groups any NPU of the instance may
@@ -396,6 +397,8 @@ class Scheduler:
             num_new = batch.scheduled_tokens[req.id]
             # num_computed_tokens was already advanced at schedule time.
             prefill_done_now = req.is_init and req.num_computed_tokens >= req.original_input
+            # the batch that wrote these tokens' blocks has completed
+            self.kv.mark_computed(req, req.num_computed_tokens)
 
             if prefill_done_now:
                 # TTFT is recorded exactly once. A resumed request has is_init
@@ -446,6 +449,7 @@ class Scheduler:
                 end_reqs.append(req)
 
         del self.inflight[idx]
+        self.kv.sample(finish)
         return prompt_t, gen_t, end_reqs
 
     def _retire(self, req):

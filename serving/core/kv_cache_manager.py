@@ -278,6 +278,11 @@ class TieredKVCacheManager:
                 self._charge_recall(req)
 
         new_blocks = self._allocate_new_blocks(req, num_tokens_need_slot)
+        if num_lower_tier_tokens and new_blocks:
+            # the recalled range is staged in: those blocks are in transfer
+            # until the batch that carries the load completes
+            n_transfer = min(len(new_blocks), cdiv(num_lower_tier_tokens, self.block_size))
+            self.npu_pool.mark_in_transfer(new_blocks[:n_transfer])
 
         if self.enable_caching:
             # Cap at the reached length: only finalised tokens may be indexed.
@@ -378,6 +383,44 @@ class TieredKVCacheManager:
         recovery is a recall, and without one it is a recompute.
         """
         self.free(req)
+
+    # -------------------- ledger --------------------
+
+    def mark_computed(self, req, num_tokens):
+        """The batch covering ``req``'s first ``num_tokens`` tokens completed:
+        their blocks are resident now (RESERVED / IN_TRANSFER -> REFERENCED)."""
+        blocks = self.req_to_blocks.get(req.id)
+        if not blocks or num_tokens <= 0:
+            return
+        self.npu_pool.mark_written(blocks[:cdiv(num_tokens, self.block_size)])
+
+    def sample(self, t_ns):
+        for pool in [self.npu_pool] + list(self.lower_pools):
+            pool.sample(t_ns)
+
+    def check_conservation(self):
+        for pool in [self.npu_pool] + list(self.lower_pools):
+            pool.check_conservation()
+        return True
+
+    def write_ledger(self, out_dir, instance_id, end_ns=None):
+        """Per-tier state time series (CSV) and byte-time integrals (JSON)."""
+        import csv, json, os
+        from serving.core.block_pool import BlockState
+        os.makedirs(out_dir, exist_ok=True)
+        summary = {}
+        for pool in [self.npu_pool] + list(self.lower_pools):
+            name = f"inst{instance_id}_{pool.tier.name.lower()}"
+            with open(os.path.join(out_dir, name + ".csv"), "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["t_ns"] + [s.name.lower() + "_blocks" for s in BlockState])
+                for t, counts in pool.ledger:
+                    w.writerow([t] + list(counts))
+            summary[name] = dict(pool.ledger_integrals(end_ns), num_blocks=pool.num_blocks,
+                                 bytes_per_block=pool.bytes_per_block, block_size=pool.block_size)
+        with open(os.path.join(out_dir, f"inst{instance_id}_summary.json"), "w") as f:
+            json.dump(summary, f, indent=2)
+        return summary
 
     # -------------------- accounting --------------------
 

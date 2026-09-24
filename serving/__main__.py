@@ -1341,6 +1341,19 @@ def main():
         print(f"Saving each request's information to output file: {output_file}")
         for i in range(num_instances):
             schedulers[i].save_output(output_file, is_append=False if i == 0 else True)
+    # KV ledger (plan sec. 6): per-tier block-state time series and byte-time
+    # integrals for every instance, next to the run's other inputs.
+    try:
+        # next to the per-request CSV (the inputs root is cleaned up unless
+        # --keep-inputs), else under the run's inputs
+        ledger_dir = (os.path.splitext(output_file)[0] + '.ledger') if output_file \
+            else os.path.join(run_paths.inputs_root, 'ledger')
+        for i in range(num_instances):
+            schedulers[i].kv.check_conservation()
+            schedulers[i].kv.write_ledger(ledger_dir, i, end_ns=current)
+        print(f"KV ledger written to {ledger_dir}")
+    except Exception as e:   # the ledger must never turn a finished run into a failure
+        print(f"KV ledger not written: {e}")
 
     # --save-trace-text writes the text into the run directory, so keeping it
     # is implied: producing the text and then deleting it would be pointless.
