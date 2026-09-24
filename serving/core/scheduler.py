@@ -323,6 +323,9 @@ class Scheduler:
             req.num_computed_tokens = computed_before + num_new
 
         recall_bytes, write_through_bytes = self.kv.take_traffic()
+        # allocations for this batch are made: sample the ledger so the
+        # RESERVED / IN_TRANSFER interval up to the batch's completion is seen
+        self.kv.sample(current)
 
         batch = Batch(self.get_batch_id(), self.model, total_len, kv_len, q_list, k_list,
                       num_prefill, num_decode, prefill_q_list, prefill_k_list, decode_k_list,
