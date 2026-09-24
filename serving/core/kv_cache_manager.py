@@ -418,6 +418,15 @@ class TieredKVCacheManager:
                     w.writerow([t] + list(counts))
             summary[name] = dict(pool.ledger_integrals(end_ns), num_blocks=pool.num_blocks,
                                  bytes_per_block=pool.bytes_per_block, block_size=pool.block_size)
+        # G6 acceptance: no leaked reservations -- at exit every tier is back
+        # to a fully free list and no block is pinned or in transfer.
+        from serving.core.block_pool import BlockState as _BS
+        leaked = {f"inst{instance_id}_{p.tier.name.lower()}": {
+                      "pinned_blocks": sum(1 for b in p.blocks if b.ref_cnt > 0),
+                      "reserved_or_in_transfer": p.state_counts()[_BS.RESERVED] + p.state_counts()[_BS.IN_TRANSFER],
+                      "all_free": p.is_free()}
+                  for p in [self.npu_pool] + list(self.lower_pools)}
+        summary["exit_check"] = leaked
         with open(os.path.join(out_dir, f"inst{instance_id}_summary.json"), "w") as f:
             json.dump(summary, f, indent=2)
         return summary
