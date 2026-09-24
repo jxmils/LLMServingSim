@@ -32,18 +32,30 @@ def model_bytes(model) -> Dict[str, float]:
     fp = BYTES[m["torch_dtype"]]
     H, Hkv, hd = m["num_attention_heads"], m["num_key_value_heads"], m["head_dim"]
     q_dim, kv_dim = H * hd, Hkv * hd
-    attn_params = d * (q_dim + 2 * kv_dim) + q_dim * d       # qkv_proj + o_proj
+    att = m["attention"]
+    if att["kind"] == "mla":
+        # DeepSeek-style MLA: q_a (d x q_lora) + q_b (q_lora x H*(nope+rope)) +
+        # kv_a (d x (kv_lora+rope)) + kv_b (kv_lora x H*(nope+v)) + o (H*v x d)
+        qk = att["qk_nope_head_dim"] + att["qk_rope_head_dim"]
+        attn_params = (d * att["q_lora_rank"] + att["q_lora_rank"] * H * qk
+                       + d * (att["kv_lora_rank"] + att["qk_rope_head_dim"])
+                       + att["kv_lora_rank"] * H * (att["qk_nope_head_dim"] + att["v_head_dim"])
+                       + H * att["v_head_dim"] * d)
+    else:
+        attn_params = d * (q_dim + 2 * kv_dim) + q_dim * d   # qkv_proj + o_proj
     norm_params = 2 * d + (2 * hd if True else 0)             # two RMSNorms (+ qk_norm weights, tiny)
     moe = m.get("moe")
     moe_layers = set(moe["moe_layers"]) if moe else set()
     dense_mlp = 3 * d * m["intermediate_size"]
     expert_params = (3 * d * moe["moe_intermediate_size"]) if moe else 0
+    shared_experts = int(moe.get("shared_experts", 0)) if moe else 0
     total = V * d * (1 if m.get("tie_word_embeddings") else 2) + d  # embeddings, lm_head, final norm
     per_layer = []
     for layer in range(L):
         p = attn_params + norm_params
         if layer in moe_layers:
-            p += moe["num_experts"] * expert_params + d * moe["num_experts"]  # experts + router
+            # routed experts + router + shared expert(s) (same width, always active)
+            p += (moe["num_experts"] + shared_experts) * expert_params + d * moe["num_experts"]
         else:
             p += dense_mlp
         per_layer.append(p)
@@ -72,6 +84,7 @@ def per_rank(model, placement, inst_idx: int = 0) -> Dict[str, float]:
     moe = m.get("moe")
     n_moe = b["moe_layers"]
     # dense parts sharded by TP; experts by EP; embeddings/lm_head by TP
+    # routed experts are sharded by EP; everything else (incl. shared experts) by TP
     dense_per_rank = (b["params"] - n_moe * moe["num_experts"] * b["expert_params_each"]) / tp if moe else b["params"] / tp
     experts_per_rank = (moe["num_experts"] / ep) if moe else 0
     expert_bytes_per_rank = n_moe * experts_per_rank * b["expert_params_each"] * fp

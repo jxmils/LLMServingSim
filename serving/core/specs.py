@@ -160,6 +160,24 @@ def cross_check(specs: Dict[str, Spec]) -> List[str]:
     if fabric is not None and placement is not None:
         if int(placement["num_ranks"]) != int(fabric["nodes"]):
             problems.append(f"placement num_ranks {placement['num_ranks']} != fabric nodes {fabric['nodes']}")
+    model = specs.get("model")
+    if model is not None and model.get("frontend_model_config"):
+        # The frontend executes configs/model/<name>.json; the spec was made
+        # from the exact HF file. They must be the same bytes.
+        rel = model["frontend_model_config"]
+        found = None
+        base = os.path.dirname(model.source)
+        for _ in range(6):
+            cand = os.path.join(base, rel)
+            if os.path.isfile(cand):
+                found = cand
+                break
+            base = os.path.dirname(base)
+        if found is None:
+            problems.append(f"model frontend_model_config {rel} not found near {model.source}")
+        elif _sha256(found) != model["config_sha256"]:
+            problems.append(f"model frontend_model_config {rel} sha256 {_sha256(found)[:12]}… differs "
+                            f"from the spec's config_sha256 {model['config_sha256'][:12]}…")
     model, placement = specs.get("model"), specs.get("placement")
     if model is not None and placement is not None and model.get("moe"):
         owners = placement.get("expert_owner")

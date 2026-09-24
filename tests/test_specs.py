@@ -78,3 +78,22 @@ def test_cross_check_and_resolved_emission(tmp_path):
     assert bundle["specs"]["model"]["sha256"] == model.sha256
     assert bundle["cross_check"] == []
     assert bundle["run"] == {"run_id": "t"}
+
+
+def test_cross_check_refuses_edited_frontend_config(tmp_path):
+    """The frontend runs configs/model/<name>.json; the spec's hash is of the exact HF file."""
+    import json, os, shutil
+    from serving.core import specs
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec_src = os.path.join(root, "configs", "specs", "model", "qwen3-235b-a22b.json")
+    ok = specs.cross_check({"model": specs.load_spec("model", spec_src)})
+    assert ok == []
+    # copy the tree shape: <tmp>/configs/specs/model/spec.json + <tmp>/configs/model/Qwen/... edited
+    os.makedirs(tmp_path / "configs" / "specs" / "model")
+    os.makedirs(tmp_path / "configs" / "model" / "Qwen")
+    shutil.copy(spec_src, tmp_path / "configs" / "specs" / "model" / "qwen3-235b-a22b.json")
+    cfg = json.load(open(os.path.join(root, "configs", "model", "Qwen", "Qwen3-235B-A22B.json")))
+    cfg["num_hidden_layers"] = 93
+    json.dump(cfg, open(tmp_path / "configs" / "model" / "Qwen" / "Qwen3-235B-A22B.json", "w"))
+    bad = specs.cross_check({"model": specs.load_spec("model", str(tmp_path / "configs" / "specs" / "model" / "qwen3-235b-a22b.json"))})
+    assert bad and "differs" in bad[0]

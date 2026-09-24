@@ -486,6 +486,17 @@ def main():
         violations = _specs.cross_check(run_specs)
         if violations:
             raise ValueError('specification cross-check failed: ' + '; '.join(violations))
+        # Refuse a model the trace generator would execute as something else
+        # (MLA attention, partly-dense MoE, ...): see model_support.py.
+        from serving.core.model_support import check_frontend_support as _check_support
+        from serving.core.utils import get_config as _get_model_config
+        _cluster_path = args.cluster_config if os.path.isabs(args.cluster_config) \
+            else os.path.join(cwd, args.cluster_config)
+        with open(_cluster_path) as _f:
+            _cluster = json.load(_f)
+        for _node in _cluster.get('nodes', []):
+            for _inst in _node.get('instances', []):
+                _check_support(_inst['model_name'], _get_model_config(_inst['model_name']))
         resolved_path = _specs.emit_resolved(run_specs, os.path.join(run_paths.inputs_root, 'specs'),
                                              extra={'run_id': args.run_id, 'network_backend': network_backend,
                                                     'cluster_config': args.cluster_config})
