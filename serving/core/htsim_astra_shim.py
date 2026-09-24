@@ -148,7 +148,11 @@ def main() -> int:
             _print_end_marker()
             return 0
 
-        if command in {"pass", "done"}:
+        # Since upstream a4053bc "pass" may carry the next known arrival
+        # ("pass <tick>") or the state-changed marker ("pass -1"). The stub has
+        # no clock to advance, so every form is acknowledged the same way; the
+        # deadline is only logged.
+        if command.split()[0] in {"pass", "done"}:
             _print_waiting()
             continue
 
