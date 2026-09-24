@@ -182,6 +182,36 @@ def _check_model(raw: dict, path: str) -> None:
             raise ValueError(f"{path}: model.moe.moe_layers outside 0..num_hidden_layers-1")
 
 
+RESERVATION_POLICIES = ("early", "just_in_time", "transfer_time")
+
+
+def serving_policy_overrides(spec: Spec) -> Dict[str, Any]:
+    """Frontend settings a ServingPolicySpec dictates (G6).
+
+    reservation.policy: 'early' reserves the whole sequence's KV at admission
+    (vLLM's reserve_full_isl); 'just_in_time' grows the reservation block by
+    block as tokens are computed; 'transfer_time' reserves a staged block when
+    its transfer is issued -- in this frontend a recall is issued at admission
+    of the resuming/hitting request, so capacity-wise it behaves like
+    just_in_time and is labelled as such in the resolved specs.
+    admission.reserve_full_isl, when present, must agree.
+    """
+    reservation = spec.get("reservation", {}) or {}
+    policy = reservation.get("policy", "early")
+    if policy not in RESERVATION_POLICIES:
+        raise ValueError(f"{spec.source}: reservation.policy must be one of {RESERVATION_POLICIES}, got {policy!r}")
+    reserve_full = policy == "early"
+    admission = spec.get("admission", {}) or {}
+    if "reserve_full_isl" in admission and bool(admission["reserve_full_isl"]) != reserve_full:
+        raise ValueError(f"{spec.source}: admission.reserve_full_isl={admission['reserve_full_isl']} contradicts "
+                         f"reservation.policy={policy!r}")
+    out = {"reserve_full_isl": reserve_full, "reservation_policy": policy}
+    for key in ("max_num_seqs", "max_num_batched_tokens"):
+        if key in admission and admission[key] is not None:
+            out[key] = int(admission[key])
+    return out
+
+
 def cross_check(specs: Dict[str, Spec]) -> List[str]:
     """Consistency rules between kinds. Returns a list of violations."""
     problems = []

@@ -97,3 +97,20 @@ def test_cross_check_refuses_edited_frontend_config(tmp_path):
     json.dump(cfg, open(tmp_path / "configs" / "model" / "Qwen" / "Qwen3-235B-A22B.json", "w"))
     bad = specs.cross_check({"model": specs.load_spec("model", str(tmp_path / "configs" / "specs" / "model" / "qwen3-235b-a22b.json"))})
     assert bad and "differs" in bad[0]
+
+
+def test_serving_policy_overrides_and_contradiction(tmp_path):
+    import json, os
+    from serving.core import specs
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    early = specs.load_spec("serving_policy", os.path.join(root, "configs", "specs", "serving_policy", "frontend-default.json"))
+    jit = specs.load_spec("serving_policy", os.path.join(root, "configs", "specs", "serving_policy", "just-in-time.json"))
+    assert specs.serving_policy_overrides(early)["reserve_full_isl"] is True
+    o = specs.serving_policy_overrides(jit)
+    assert o["reserve_full_isl"] is False and o["reservation_policy"] == "just_in_time" and o["max_num_seqs"] == 128
+    bad = json.load(open(os.path.join(root, "configs", "specs", "serving_policy", "just-in-time.json")))
+    bad["admission"]["reserve_full_isl"] = True
+    p = tmp_path / "bad.json"; json.dump(bad, open(p, "w"))
+    import pytest
+    with pytest.raises(ValueError, match="contradicts"):
+        specs.serving_policy_overrides(specs.load_spec("serving_policy", str(p)))

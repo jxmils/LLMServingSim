@@ -1,0 +1,33 @@
+{
+  "spec_version": 1,
+  "name": "just-in-time",
+  "description": "LLMServingSim's defaults with just-in-time KV reservation: a request is admitted when its first chunk fits and its reservation grows block by block as tokens are computed (vLLM with scheduler_reserve_full_isl off). Preemption from the running set's tail when the cache fills.",
+  "admission": {
+    "policy": "vllm_v1_waiting_queue",
+    "reserve_full_isl": false,
+    "max_num_seqs": 128,
+    "max_num_batched_tokens": 2048
+  },
+  "batching": {
+    "policy": "continuous",
+    "chunked_prefill": true,
+    "long_prefill_token_threshold": null
+  },
+  "prefill_decode": {
+    "policy": "colocated"
+  },
+  "reservation": {
+    "policy": "just_in_time",
+    "notes": "capacity reserved per block as tokens are produced; a running request can be preempted when the cache fills"
+  },
+  "eviction": {
+    "policy": "preempt_running_tail",
+    "recompute_on_resume": true
+  },
+  "prefetch": {
+    "policy": "none"
+  },
+  "network_aware": {
+    "policy": "none"
+  }
+}

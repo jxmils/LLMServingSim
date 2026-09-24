@@ -445,6 +445,24 @@ def main():
     power_modeling = cluster["power_modeling"]
     power_configs = cluster["power_configs"]
     pim_models = cluster["pim_models"]
+    # A ServingPolicySpec, when given, dictates the reservation policy (and
+    # the batching limits it names) on every backend; the CLI/cluster values
+    # are overridden and the override is printed so the run states it.
+    if getattr(args, 'serving_policy_spec', None):
+        from serving.core import specs as _specs_early
+        _sp_path = args.serving_policy_spec if os.path.isabs(args.serving_policy_spec) \
+            else os.path.join(cwd, args.serving_policy_spec)
+        _sp = _specs_early.load_spec('serving_policy', _sp_path)
+        _ov = _specs_early.serving_policy_overrides(_sp)
+        print(f"Serving policy spec {_sp.name}: reservation={_ov['reservation_policy']} "
+              f"-> reserve_full_isl={_ov['reserve_full_isl']}"
+              + (f", max_num_seqs={_ov['max_num_seqs']}" if 'max_num_seqs' in _ov else "")
+              + (f", max_num_batched_tokens={_ov['max_num_batched_tokens']}" if 'max_num_batched_tokens' in _ov else ""))
+        args.reserve_full_isl = _ov['reserve_full_isl']
+        if 'max_num_seqs' in _ov:
+            args.max_num_seqs = _ov['max_num_seqs']
+        if 'max_num_batched_tokens' in _ov:
+            args.max_num_batched_tokens = _ov['max_num_batched_tokens']
     instance_runtime_configs = _build_instance_runtime_configs(instances, args, _dtype_to_bits)
     any_prefix_caching = any(cfg["enable_prefix_caching"] for cfg in instance_runtime_configs)
     # ----------------------------------------- Set config -----------------------------------------
