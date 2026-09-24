@@ -175,3 +175,15 @@ def test_resolve_binary_requires_a_path(monkeypatch):
     assert resolve_binary(sys.executable) == sys.executable
     with pytest.raises(FileNotFoundError, match="not executable"):
         resolve_binary(os.devnull)
+
+
+def test_network_config_is_flattened_to_one_dimension(tmp_path):
+    import yaml
+    from serving.core.panel_backend import flatten_network_config, logical_npu_count
+    src = tmp_path / "network.yml"
+    src.write_text("topology: [FullyConnected, FullyConnected]\nnpus_count: [1, 3]\nbandwidth: [16.0, 16.0]\nlatency: [20000.0, 20000.0]\n")
+    out = flatten_network_config(str(src))
+    flat = yaml.safe_load(open(out))
+    assert flat["npus_count"] == [3] and flat["topology"] == ["FullyConnected"]
+    assert flat["bandwidth"] == [16.0] and flat["latency"] == [20000.0]
+    assert logical_npu_count(out) == 3

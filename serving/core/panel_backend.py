@@ -151,6 +151,34 @@ def logical_npu_count(network_config_path: str) -> int:
     return total
 
 
+def flatten_network_config(network_config_path: str, out_path: Optional[str] = None) -> str:
+    """Write the panel backend's copy of network.yml as one dimension.
+
+    The htsim frontend reads network.yml only for the rank count (it routes
+    on its own fabric), but it does so through astra-network-analytical's
+    parser, which refuses any dimension of size 1 -- and the frontend writes
+    e.g. `npus_count: [1, 3]` for a prefill/decode cluster. The per-dimension
+    bandwidth/latency are meaningless to the panel path and are copied from
+    the first dimension only so the file stays well formed.
+    """
+    import yaml
+    with open(network_config_path, "r", encoding="utf-8") as f:
+        topo = yaml.safe_load(f)
+    total = logical_npu_count(network_config_path)
+    flat = dict(topo)
+    flat["topology"] = [topo["topology"][0]] if isinstance(topo.get("topology"), list) else ["FullyConnected"]
+    flat["npus_count"] = [int(total)]
+    for key in ("bandwidth", "latency"):
+        if isinstance(topo.get(key), list) and topo[key]:
+            flat[key] = [topo[key][0]]
+    if out_path is None:
+        base, _ = os.path.splitext(network_config_path)
+        out_path = base + ".panel.yml"
+    with open(out_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(flat, f, sort_keys=False)
+    return out_path
+
+
 SEND_ADMISSION_MODES = ("serialized", "concurrent")
 
 
@@ -269,7 +297,7 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
             "--chakra-runtime-unit=ns",
             "--workload-configuration=" + workload,
             "--system-configuration=" + system_config,
-            "--network-configuration=" + network_config,
+            "--network-configuration=" + flatten_network_config(network_config),
             "--remote-memory-configuration=" + panel_memory]
     if start_npu_ids != "":
         args.append("--start-npu-ids=" + start_npu_ids)
