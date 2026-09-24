@@ -1,0 +1,12 @@
+# Shared-resource fixture: two TP2 pairs whose traffic crosses one link pair.
+# Endpoints 0-3; devices 4 and 5 are switches (ids >= nodes).
+E 0 4
+E 4 0
+E 2 4
+E 4 2
+E 4 5
+E 5 4
+E 5 1
+E 1 5
+E 5 3
+E 3 5

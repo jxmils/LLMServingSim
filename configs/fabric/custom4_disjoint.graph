@@ -1,0 +1,5 @@
+# Shared-resource fixture: two TP2 pairs with private links (custom graph, E src dst).
+E 0 1
+E 1 0
+E 2 3
+E 3 2

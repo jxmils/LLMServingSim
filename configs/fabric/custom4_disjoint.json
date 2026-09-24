@@ -1,0 +1,15 @@
+{
+  "spec_version": 1,
+  "name": "custom4-disjoint",
+  "description": "Shared-resource test fixture (G2 check 6 / G3): four endpoints, two TP2 pairs (0,1) and (2,3) with private links. Normalized units: 93.132 GiB/s = 100 decimal GB/s per direction, 25 ns per link. Compare with custom4_shared.json.",
+  "nodes": 4,
+  "panel": "custom",
+  "graph": "custom4_disjoint.graph",
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "policy": "static",
+  "q": 4000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true
+}
