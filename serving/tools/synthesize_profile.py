@@ -46,6 +46,8 @@ ATTN_KV = [0, 16, 32, 64, 128, 256, 512, 768, 1024, 1152, 1728, 2048, 2592, 3888
 ATTN_ND = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256]
 
 DENSE_LAYERS = ["embedding", "layernorm", "qkv_proj", "qk_norm", "rotary_emb", "o_proj", "final_layernorm"]
+DENSE_FFN_LAYERS = ["gate_up_proj", "act_fn", "down_proj"]                        # dense layers (all of a dense model, the non-MoE layers of a mixed one)
+SHARED_FFN_LAYERS = ["shared_gate_up_proj", "shared_act_fn", "shared_down_proj"]  # shared experts on MoE layers
 TP_STABLE = {"layernorm", "qk_norm", "final_layernorm", "sampler"}
 
 
@@ -79,9 +81,16 @@ class Shapes:
         self.fp = BYTES[model["torch_dtype"]]
         moe = model.get("moe")
         self.moe = moe
+        # dense FFN width (ModelSpec intermediate_size is the dense layers' width)
+        self.dense_ff = int(model.get("intermediate_size", 0) or 0)
+        self.shared_ff = 0
+        self.has_dense_layers = True
         if moe:
             self.d_ff = int(moe["moe_intermediate_size"])
             self.experts = int(moe["num_experts"])
+            self.shared_ff = int(moe.get("shared_experts", 0) or 0) * self.d_ff
+            layers = int(model["num_hidden_layers"])
+            self.has_dense_layers = len(moe.get("moe_layers") or list(range(layers))) < layers
         self.attention_kind = model["attention"]["kind"]
         if self.attention_kind == "mla":
             att = model["attention"]
@@ -106,6 +115,17 @@ class Shapes:
             return 6.0 * t * n, 2 * t * n * fp
         if layer == "o_proj":
             return 2.0 * t * self.q_local * d, (self.q_local * d + t * (self.q_local + d)) * fp
+        ffn = None
+        if layer in ("gate_up_proj", "act_fn", "down_proj"):
+            ffn = self.dense_ff // self.tp
+        elif layer in ("shared_gate_up_proj", "shared_act_fn", "shared_down_proj"):
+            ffn = self.shared_ff // self.tp
+        if ffn is not None:
+            if layer.endswith("gate_up_proj"):
+                return 2.0 * t * d * 2 * ffn, (d * 2 * ffn + t * (d + 2 * ffn)) * fp
+            if layer.endswith("act_fn"):
+                return 3.0 * t * ffn, 3 * t * ffn * fp
+            return 2.0 * t * ffn * d, (ffn * d + t * (ffn + d)) * fp
         raise KeyError(layer)
 
     # ---- per-sequence (sequences) ----
@@ -205,7 +225,12 @@ def synthesize(hw, model, tps: List[int], perf_root: str, variant: str = "bf16",
         d = os.path.join(root, f"tp{tp}")
         os.makedirs(d, exist_ok=True)
         rows = []
-        for layer in DENSE_LAYERS:
+        layers = list(DENSE_LAYERS)
+        if sh.has_dense_layers and sh.dense_ff:
+            layers += DENSE_FFN_LAYERS
+        if sh.moe and sh.shared_ff:
+            layers += SHARED_FFN_LAYERS
+        for layer in layers:
             src = tp_stable_ref if layer in TP_STABLE else sh
             for t in DENSE_TOKENS:
                 rows.append((layer, t, f"{rl.us(*src.dense(layer, t)):.4f}"))

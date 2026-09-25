@@ -1,0 +1,41 @@
+profiler_version: synthesized-1.0
+provenance: analytically_estimated
+provenance_note: Every time_us in this bundle is computed from a roofline, not measured.
+  Report it as analytically estimated.
+roofline:
+  formula: time = max(flops / (peak * achieved_fraction), bytes / hbm_bandwidth) +
+    kernel_floor
+  peak_dense_tflops: 2250
+  achieved_fraction: 0.7
+  kernel_floor_us: 5.0
+  hbm_bandwidth_gbps: 8000
+hardware_spec:
+  name: b200-like
+  sha256: 4a907ff036d84e59f50b43092150908c16d1170207a57f899ce16545003f9f8c
+  source: /Volumes/My Passport/panel-serving-20260924/LLMServingSim/configs/specs/hardware/b200-like.json
+model_spec:
+  name: llama-4-maverick-17b-128e
+  sha256: 650c28648a02dcf9d414fa8022001af4eddd5ba38abbec39d2a3c6a2aa4de129
+  source: /Volumes/My Passport/panel-serving-20260924/LLMServingSim/configs/specs/model/llama-4-maverick-17b-128e.json
+hardware: B200LIKE
+model: meta-llama/Llama-4-Maverick-17B-128E-Instruct
+variant: bf16
+architecture: qwen3_moe
+tp_degrees:
+- 1
+- 8
+engine_effective:
+  max_num_seqs: 256
+  max_num_batched_tokens: 2048
+  tensor_parallel_size: 1
+  dtype: bfloat16
+attention_grid:
+  source: default cross product
+  points: 68960
+skew_fit:
+  enabled: false
+  note: no skew sweep for synthesized bundles; alpha = 0
+timings_include:
+  communication: false
+  dma: false
+  offload: false

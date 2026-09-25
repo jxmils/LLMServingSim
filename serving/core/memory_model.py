@@ -3,6 +3,7 @@ from .utils import get_config
 from .block_pool import Device, BlockPool, PrefixCacheStats
 from .kv_cache_manager import TieredKVCacheManager, request_block_hashes
 from .kv_layout import KVLayout
+from . import model_arch
 from .logger import get_logger
 
 GB_TO_BYTE = 1024 * 1024 * 1024
@@ -63,7 +64,8 @@ class MemoryModel():
         # Accept either the Mistral-style ``num_local_experts`` or the
         # HF/Qwen-style ``num_experts`` key — profiler configs track
         # upstream HF naming which varies per family.
-        self.is_moe = 'num_local_experts' in self.config or 'num_experts' in self.config
+        self.moe_layout = model_arch.moe_layout(self.config)
+        self.is_moe = self.moe_layout is not None
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
 
@@ -195,7 +197,7 @@ class MemoryModel():
 
         _, embedding, _ = calculate_sizes(self.model, 'embedding', 1, parallel=tp, fp=fp)
         weight += embedding
-        weight += self._get_weight_per_block(tp, ep, fp) * (self.n_layer // pp)
+        weight += self._heaviest_stage_weight(tp, ep, fp, pp)
         _, ln_f, _ = calculate_sizes(self.model, 'final_layernorm', 1, parallel=tp, fp=fp)
         weight += ln_f
         _, lm_head, _ = calculate_sizes(self.model, 'lm_head', 1, parallel=tp, fp=fp)
@@ -207,8 +209,24 @@ class MemoryModel():
         )
         return weight
 
-    def _get_weight_per_block(self, tp, ep, fp):
-        """Per-block weight: dense layers use TP, MoE experts use EP."""
+    def _heaviest_stage_weight(self, tp, ep, fp, pp):
+        """Transformer-block weight of the heaviest pipeline stage. Blocks are
+        cut the way vLLM's get_pp_indices does (even split, remainder to the
+        earlier stages); a model whose layers differ (dense first layers,
+        interleaved MoE) makes the stages unequal, so the heaviest one is
+        what the capacity check must survive."""
+        per_layer = [self._get_weight_per_block(tp, ep, fp, layer) for layer in range(self.n_layer)]
+        base, rem = divmod(self.n_layer, pp)
+        heaviest, start = 0, 0
+        for stage in range(pp):
+            n = base + (1 if stage < rem else 0)
+            heaviest = max(heaviest, sum(per_layer[start:start + n]))
+            start += n
+        return heaviest
+
+    def _get_weight_per_block(self, tp, ep, fp, layer=0):
+        """Per-block weight: dense layers use TP, MoE experts use EP. ``layer``
+        picks the block's kind for models with a mixed layer schedule."""
         block_weight = 0
         _, ln_w, _ = calculate_sizes(self.model, 'layernorm', 1, parallel=tp, fp=fp)
         block_weight += ln_w  # input layernorm
@@ -217,9 +235,13 @@ class MemoryModel():
         _, o_w, _ = calculate_sizes(self.model, 'o_proj', 1, parallel=tp, fp=fp)
         block_weight += o_w
         block_weight += ln_w  # post layernorm (same weight size)
-        if self.is_moe:
+        if self.is_moe and self.moe_layout.is_moe_layer(layer):
             _, moe_w, _ = calculate_sizes(self.model, 'moe', 1, parallel=ep, fp=fp)
             block_weight += moe_w
+            if self.moe_layout.shared_experts:
+                _, s1, _ = calculate_sizes(self.model, 'shared_gate_up_proj', 1, parallel=tp, fp=fp)
+                _, s2, _ = calculate_sizes(self.model, 'shared_down_proj', 1, parallel=tp, fp=fp)
+                block_weight += s1 + s2
         else:
             _, ffn1_w, _ = calculate_sizes(self.model, 'gate_up_proj', 1, parallel=tp, fp=fp)
             block_weight += ffn1_w
@@ -462,13 +484,21 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     kv_head = config.get("num_key_value_heads", n_head)  # fallback to n_head if not defined
     q_dim = n_head * head_dim       # total Q projection output dim
     kv_dim = kv_head * head_dim     # total KV projection output dim
-    ffn_dim = config.get("intermediate_size", config.get("ffn_dim"))  # dense FFN dim
-    moe_ffn_dim = config.get("moe_intermediate_size", ffn_dim)  # per-expert FFN dim (may differ from dense)
-    # Same both-name fallback as MemoryModel.__init__ — HF / Qwen use
-    # ``num_experts`` while Mistral uses ``num_local_experts``.
-    num_local_experts = config.get(
-        "num_local_experts", config.get("num_experts", 1)
-    )
+    # FFN widths and expert counts come from one place (model_arch): dense
+    # layers of an MoE model may use their own width (Llama 4
+    # intermediate_size_mlp), experts theirs, and shared experts add an
+    # always-active FFN of n_shared x expert width.
+    layout = model_arch.moe_layout(config)
+    if layout is not None:
+        ffn_dim = layout.dense_intermediate
+        moe_ffn_dim = layout.moe_intermediate
+        num_local_experts = layout.num_experts
+        shared_ffn_dim = layout.shared_intermediate
+    else:
+        ffn_dim = config.get("intermediate_size", config.get("ffn_dim"))  # dense FFN dim
+        moe_ffn_dim = ffn_dim
+        num_local_experts = 1
+        shared_ffn_dim = 0
 
     p = max(int(parallel), 1)
     # Per-rank Q/KV widths: heads are sharded over the parallel degree and a
@@ -546,6 +576,24 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     elif layer_name == "down_proj":
         input_size = length * (ffn_dim // p) * fp
         weight_size = (ffn_dim // p) * n_embd * fp
+        output_size = length * n_embd * fp
+
+    # ----------------- Shared experts (MoE layers) -----------------
+    # Sharded by TP like a dense FFN; their output is summed into the routed
+    # experts' output before the MoE combine collective.
+    elif layer_name == "shared_gate_up_proj":
+        input_size = length * n_embd * fp
+        weight_size = n_embd * 2 * (shared_ffn_dim // p) * fp
+        output_size = length * 2 * (shared_ffn_dim // p) * fp
+
+    elif layer_name == "shared_act_fn":
+        input_size = length * 2 * (shared_ffn_dim // p) * fp
+        weight_size = 0
+        output_size = length * (shared_ffn_dim // p) * fp
+
+    elif layer_name == "shared_down_proj":
+        input_size = length * (shared_ffn_dim // p) * fp
+        weight_size = (shared_ffn_dim // p) * n_embd * fp
         output_size = length * n_embd * fp
 
     elif layer_name == "sampler":

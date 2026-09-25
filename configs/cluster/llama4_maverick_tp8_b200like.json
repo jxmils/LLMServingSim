@@ -1,0 +1,31 @@
+{
+    "num_nodes": 1,
+    "link_bw": 450,
+    "link_latency": 500,
+    "nodes": [
+        {
+            "num_instances": 1,
+            "cpu_mem": {
+                "mem_size": 1024,
+                "mem_bw": 256,
+                "mem_latency": 0
+            },
+            "instances": [
+                {
+                    "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+                    "hardware": "B200LIKE",
+                    "npu_mem": {
+                        "mem_size": 180,
+                        "mem_bw": 8000,
+                        "mem_latency": 0,
+                        "mem_util": 0.9
+                    },
+                    "num_npus": 8,
+                    "tp_size": 8,
+                    "ep_size": 8,
+                    "pd_type": null
+                }
+            ]
+        }
+    ]
+}

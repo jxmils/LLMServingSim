@@ -1,4 +1,5 @@
 import json
+from . import model_arch
 import yaml
 import math
 import sys
@@ -67,7 +68,7 @@ def _resolve_parallelism(instance, model_config):
     # Accept either the Mistral-style ``num_local_experts`` key or the
     # HF/Qwen3 ``num_experts`` key — HF naming varies per model family
     # and the profiler's configs track upstream.
-    is_moe = 'num_local_experts' in model_config or 'num_experts' in model_config
+    is_moe = model_arch.is_moe(model_config)
 
     num_npus = instance.get("num_npus")
     tp_size = instance.get("tp_size")
@@ -116,9 +117,7 @@ def _resolve_parallelism(instance, model_config):
             f"({num_hidden_layers}); a pipeline stage cannot be empty"
         )
     if is_moe:
-        num_experts = model_config.get(
-            "num_local_experts", model_config.get("num_experts", 1)
-        )
+        num_experts = model_arch.num_experts(model_config) or 1
         if num_experts % ep_size != 0:
             raise ValueError(
                 f"ep_size ({ep_size}) must divide the model's expert count "

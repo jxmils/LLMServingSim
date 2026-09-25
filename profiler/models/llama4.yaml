@@ -1,0 +1,83 @@
+# Llama 4 family (Scout / Maverick) — class catalog (decoder-only MoE with
+# interleaved dense layers and one shared expert per MoE layer).
+#
+# The HF config is a multimodal wrapper; the frontend flattens
+# ``text_config`` (serving/core/model_arch.decoder_config) and reads
+# ``model_type: llama4_text`` -> this catalog. Layer schedule
+# (``moe_layers`` / ``interleave_moe_layer_step``): odd layers are MoE
+# (routed experts of width ``intermediate_size`` plus the always-active
+# ``shared_expert`` of the same width), even layers are dense with
+# ``intermediate_size_mlp``. The trace generator picks ``mlp_moe`` or
+# ``mlp_dense`` per layer from that schedule.
+#
+# Not modelled: chunked local attention on 3 of every 4 layers
+# (``attention_chunk_size``) — full-context attention and KV are the
+# upper bound, as the ModelSpec states — and ``no_rope_layers``
+# (rotary_emb is emitted on every layer; it is a small elementwise op).
+#
+# Canonical layer names mirror vLLM's attribute names (see
+# ../vllm/vllm/model_executor/models/llama4.py). The shared expert is
+# emitted as three dense layers ``shared_gate_up_proj`` / ``shared_act_fn``
+# / ``shared_down_proj``; its TP-partial output is summed into the routed
+# output before the MoE combine collective, so it carries no ALLREDUCE of
+# its own.
+
+
+sequence:
+  prologue:  [embedding]
+  pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: [gate_up_proj, act_fn, down_proj]
+  mlp_moe:   [shared_gate_up_proj, shared_act_fn, shared_down_proj, moe]
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: RMSNorm
+      within: Llama4DecoderLayer
+      tp_stable: true
+    qkv_proj:
+      vllm: QKVParallelLinear
+    rotary_emb:
+      vllm: Llama4RotaryEmbedding
+    o_proj:
+      vllm: RowParallelLinear
+      within: Llama4Attention
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: Llama4MLP
+    act_fn:
+      vllm: SiluAndMul
+      within: Llama4MLP
+    down_proj:
+      vllm: RowParallelLinear
+      within: Llama4MLP
+    shared_gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: Llama4MoE.shared_expert
+    shared_act_fn:
+      vllm: SiluAndMul
+      within: Llama4MoE.shared_expert
+    shared_down_proj:
+      vllm: RowParallelLinear
+      within: Llama4MoE.shared_expert
+    final_layernorm:
+      vllm: RMSNorm
+      within: Llama4ForCausalLM
+      tp_stable: true
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+  attention:
+    attention:
+      vllm: Attention
+  moe:
+    moe:
+      vllm: Llama4MoE

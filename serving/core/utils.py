@@ -104,7 +104,10 @@ def get_config(model_name):
             f"{', '.join(candidate_paths)}. Please add the corresponding config file."
         )
 
-    return config
+    # Multimodal wrappers (Llama 4) keep the decoder under ``text_config``;
+    # every consumer reads decoder fields from one flat dict.
+    from .model_arch import decoder_config
+    return decoder_config(config)
 
 
 if __name__ == "__main__":

@@ -18,25 +18,21 @@ def test_supported_models_pass():
         assert unsupported_features(_cfg(rel)) == [], rel
 
 
-def test_mla_and_partly_dense_moe_are_refused():
+def test_mla_is_the_remaining_refusal():
     ds = unsupported_features(_cfg("deepseek-ai/DeepSeek-V3.json"))
-    assert any("MLA" in p for p in ds)
-    assert any("n_routed_experts" in p for p in ds)
-    assert any("first_k_dense_replace=3" in p for p in ds)
-    assert any("shared experts" in p for p in ds)
+    assert len(ds) == 1 and "MLA" in ds[0]
     km = unsupported_features(_cfg("moonshotai/Kimi-K2-Thinking.json"))
-    assert any("first_k_dense_replace=1" in p for p in km)
+    assert len(km) == 1 and "MLA" in km[0]
 
 
-def test_llama4_interleaved_moe_is_refused():
-    l4 = unsupported_features(_cfg("meta-llama/Llama-4-Maverick-17B-128E-Instruct.json"))
-    assert any("text_config" in p for p in l4)
-    assert any("subset of layers" in p for p in l4)
-    assert not any("MLA" in p for p in l4)
+def test_llama4_interleaved_moe_is_admitted():
+    # text_config wrapper, odd-layer MoE and the shared expert are modelled
+    # (serving/core/model_arch.py); nothing left to refuse.
+    assert unsupported_features(_cfg("meta-llama/Llama-4-Maverick-17B-128E-Instruct.json")) == []
 
 
 def test_check_raises_with_every_reason():
     with pytest.raises(ValueError) as e:
         check_frontend_support("deepseek-ai/DeepSeek-V3", _cfg("deepseek-ai/DeepSeek-V3.json"))
     msg = str(e.value)
-    assert "MLA" in msg and "first_k_dense_replace" in msg and "trace_generator.py" in msg
+    assert "MLA" in msg and "trace_generator.py" in msg

@@ -12,36 +12,28 @@ silently wrong workload, so it is refused here with the reason.
 """
 from typing import Dict, List
 
+from .model_arch import decoder_config, moe_layout
+
 
 def unsupported_features(config: Dict) -> List[str]:
     """Return the architecture features of ``config`` the trace generator
-    does not model. Empty means the model can be executed faithfully."""
+    does not model. Empty means the model can be executed faithfully.
+
+    Modelled since 2026-09-25 (serving/core/model_arch.py): the multimodal
+    ``text_config`` wrapper, ``n_routed_experts``, a mixed layer schedule
+    (``first_k_dense_replace``, ``moe_layers`` / ``interleave_moe_layer_step``)
+    and shared experts (``n_shared_experts``, Llama 4's implicit shared
+    expert). Still refused: MLA attention, whose projections and KV reads
+    differ from the GQA shapes the trace generator emits."""
     problems = []
-    if "text_config" in config:
-        problems.append("multimodal wrapper config (text_config): the frontend reads decoder "
-                        "fields from the top level only")
-        config = config["text_config"]
+    config = decoder_config(config)
     if "kv_lora_rank" in config or "q_lora_rank" in config:
         problems.append("MLA attention (kv_lora_rank/q_lora_rank): the trace generator emits "
                         "GQA-shaped q/k/v projections and KV reads")
-    layers = int(config.get("num_hidden_layers", 0))
-    if "n_routed_experts" in config and not ("num_experts" in config or "num_local_experts" in config):
-        problems.append("MoE declared with n_routed_experts only: the frontend keys MoE on "
-                        "num_experts/num_local_experts and would run the model as dense")
-    is_moe = any(k in config for k in ("num_experts", "num_local_experts", "n_routed_experts"))
-    if is_moe:
-        first_dense = int(config.get("first_k_dense_replace", 0))
-        if first_dense > 0:
-            problems.append(f"first_k_dense_replace={first_dense}: the trace generator emits an "
-                            "MoE block on every layer")
-        step = int(config.get("interleave_moe_layer_step", 1))
-        moe_layers = config.get("moe_layers")
-        if step > 1 or (isinstance(moe_layers, list) and layers and len(moe_layers) != layers):
-            problems.append("MoE on a subset of layers (interleave_moe_layer_step/moe_layers): the "
-                            "trace generator emits an MoE block on every layer")
-        if int(config.get("n_shared_experts", 0)) > 0:
-            problems.append("shared experts (n_shared_experts): always-active expert compute is "
-                            "not modelled")
+    layout = moe_layout(config)
+    if layout is not None and not layout.moe_layers:
+        problems.append("MoE model whose layer schedule resolves to no MoE layer "
+                        "(moe_layers/interleave_moe_layer_step/first_k_dense_replace)")
     return problems
 
 
