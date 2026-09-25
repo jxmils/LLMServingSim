@@ -53,8 +53,18 @@ _FLAG_OPTS = (
     ("nocc", "-nocc"),
     ("ocs", "-ocs"),
     ("nolog", "-nolog"),
+    ("preconnected", "-preconnected"),   # flows skip the TCP handshake (persistent channels)
 )
-_KNOWN_KEYS = {k for k, _ in _SCALAR_OPTS} | {k for k, _ in _FLAG_OPTS} | {
+# Calibration keys the frontend consumes itself (hardware validation, 2026-09-26):
+# they become a backend flag before --htsim_opts or system.json overrides,
+# not --htsim_opts entries.
+_FRONTEND_KEYS = {
+    "recv_flow_finish",        # bool: --recv-flow-finish (receive completes on last byte)
+    "collective_launch_ns",    # int:  system.json collective-launch-delay-ns
+    "dataset_split_bytes",     # int:  system.json dataset-split-bytes
+    "max_dataset_splits",      # int:  system.json preferred-dataset-splits (the maximum with split bytes)
+}
+_KNOWN_KEYS = {k for k, _ in _SCALAR_OPTS} | {k for k, _ in _FLAG_OPTS} | _FRONTEND_KEYS | {
     "spec_version", "name", "nodes", "extra", "description", "source",
     # written by compose_fabric.py: the MemoryPoolSpec this graph was composed
     # with; the backend's pool configuration is the sibling <spec>.pool.json
@@ -138,6 +148,29 @@ class FabricSpec:
         out += self.extra
         return out
 
+    def frontend_flags(self) -> List[str]:
+        """Backend flags that go before `--htsim_opts`."""
+        v = self.options.get("recv_flow_finish")
+        if v is None or v is False:
+            return []
+        if v is not True:
+            raise ValueError(f"FabricSpec {self.name}: recv_flow_finish is a boolean flag")
+        return ["--recv-flow-finish"]
+
+    def system_overrides(self) -> Dict[str, int]:
+        """system.json keys this fabric pins (collective calibration)."""
+        out = {}
+        for key, sys_key in (("collective_launch_ns", "collective-launch-delay-ns"),
+                             ("dataset_split_bytes", "dataset-split-bytes"),
+                             ("max_dataset_splits", "preferred-dataset-splits")):
+            v = self.options.get(key)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ValueError(f"FabricSpec {self.name}: {key} must be a non-negative integer")
+            out[sys_key] = v
+        return out
+
 
 def logical_npu_count(network_config_path: str) -> int:
     """Product of `npus_count` in the network.yml config_builder wrote."""
@@ -187,7 +220,8 @@ def flatten_network_config(network_config_path: str, out_path: Optional[str] = N
 
 
 def flatten_system_config(system_config_path: str, out_path: Optional[str] = None,
-                          keep: Optional[List[int]] = None) -> str:
+                          keep: Optional[List[int]] = None,
+                          overrides: Optional[Dict[str, int]] = None) -> str:
     """Write the panel backend's copy of system.json whose per-dimension
     collective implementation lists match the kept network dimensions (the
     system layer asserts that they do not exceed the dimension count)."""
@@ -198,6 +232,8 @@ def flatten_system_config(system_config_path: str, out_path: Optional[str] = Non
         if key.endswith("-implementation") and isinstance(val, list) and len(val) > 1:
             idx = keep if keep is not None else list(range(len(val)))
             flat[key] = [val[i] for i in idx if i < len(val)] or [val[0]]
+    if overrides:
+        flat.update(overrides)
     if out_path is None:
         base, _ = os.path.splitext(system_config_path)
         out_path = base + ".panel.json"
@@ -329,7 +365,8 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
             "--chakra-send-admission=" + chakra_send_admission,
             "--chakra-runtime-unit=ns",
             "--workload-configuration=" + workload,
-            "--system-configuration=" + flatten_system_config(system_config, keep=_kept_dims(network_config)),
+            "--system-configuration=" + flatten_system_config(system_config, keep=_kept_dims(network_config),
+                                                              overrides=fabric.system_overrides()),
             "--network-configuration=" + flatten_network_config(network_config),
             "--remote-memory-configuration=" + panel_memory]
     if start_npu_ids != "":
@@ -340,6 +377,7 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
         # Pool MEM_LOAD/MEM_STORE nodes become flows to/from the pool's bank
         # device; REMOTE (CPU) locations keep the analytical remote memory.
         args.append("--memory-pool-configuration=" + pool_cfg)
+    args += fabric.frontend_flags()
     args += fabric.htsim_opts()
     return args
 

@@ -1,0 +1,12 @@
+# The 4x H100 PCIe node as NCCL's ring uses it: PCIe through the host-bridge complex only.
+# The GPU2-GPU3 NVLink bridge exists (custom4_pcie_h100.graph) but a 4-ring cannot use it
+# as a shortcut without overlapping consecutive steps' flows on the PCIe links, which the
+# real kernel serialises; keep it out of the collective graph.
+E 0 4 17.3
+E 4 0 17.3
+E 1 4 17.3
+E 4 1 17.3
+E 2 4 17.3
+E 4 2 17.3
+E 3 4 17.3
+E 4 3 17.3

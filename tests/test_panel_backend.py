@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from serving.core.panel_backend import (  # noqa: E402
-    FabricSpec, build_backend_args, logical_npu_count, resolve_binary,
+    FabricSpec, build_backend_args, flatten_system_config, logical_npu_count, resolve_binary,
     translate_memory_config,
 )
 
@@ -211,3 +211,23 @@ def test_system_config_collective_lists_follow_the_flattened_network(tmp_path):
     both = json.load(open(flatten_system_config(str(src), keep=[0, 1])))
     assert both["all-reduce-implementation"] == ["ring", "ring"]
     assert out["local-mem-bw"] == 50 and out["scheduling-policy"] == "LIFO"
+
+
+def test_calibration_keys_render_as_flags_and_system_overrides(tmp_path):
+    raw = dict(HYBRID, preconnected=True, recv_flow_finish=True, collective_launch_ns=24000,
+               dataset_split_bytes=4194304, max_dataset_splits=16)
+    spec = FabricSpec.load(_write(tmp_path, "c.json", raw))
+    opts = spec.htsim_opts()
+    assert "-preconnected" in opts and "recv_flow_finish" not in " ".join(opts)
+    assert spec.frontend_flags() == ["--recv-flow-finish"]
+    assert spec.system_overrides() == {"collective-launch-delay-ns": 24000, "dataset-split-bytes": 4194304,
+                                       "preferred-dataset-splits": 16}
+    sysc = tmp_path / "system.json"
+    sysc.write_text(json.dumps({"preferred-dataset-splits": 4, "all-reduce-implementation": ["ring"]}))
+    out = flatten_system_config(str(sysc), overrides=spec.system_overrides())
+    flat = json.load(open(out))
+    assert flat["preferred-dataset-splits"] == 16 and flat["dataset-split-bytes"] == 4194304 \
+        and flat["collective-launch-delay-ns"] == 24000
+    bad = FabricSpec.load(_write(tmp_path, "d.json", dict(HYBRID, collective_launch_ns="soon")))
+    with pytest.raises(ValueError):
+        bad.system_overrides()

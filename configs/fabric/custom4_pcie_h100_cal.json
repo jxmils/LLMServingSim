@@ -1,0 +1,21 @@
+{
+  "spec_version": 1,
+  "name": "custom4-pcie-h100-cal",
+  "description": "Calibrated 4x H100 PCIe node fabric for TP4 (hardware validation 2026-09-26): ring-only PCIe graph (the NVLink bridge cannot serve a ring), 17.3 GiB/s per direction (measured NCCL plateau), 300 ns effective per-hop latency and a 24 us collective launch floor (both read off nccl-tests at 8 B), persistent channels (-preconnected), receiver-side completion (--recv-flow-finish), 4 MiB dataset splits up to 16. Against nccl-tests on htc-g055: all-reduce within -12..+10 % at <= 64 KiB and >= 4 MiB, 14-25 % fast at 256 KiB-1 MiB (NCCL protocol regime), all-gather/reduce-scatter 5-9 % fast at large sizes, all-to-all 10-17 % fast.",
+  "nodes": 4,
+  "panel": "custom",
+  "graph": "custom4_pcie_h100_ring.graph",
+  "linkGiBps": 17.3,
+  "latencyNs": 300,
+  "policy": "static",
+  "q": 90000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true,
+  "maxwin": 2097152,
+  "preconnected": true,
+  "recv_flow_finish": true,
+  "collective_launch_ns": 24000,
+  "dataset_split_bytes": 4194304,
+  "max_dataset_splits": 16
+}
