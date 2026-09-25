@@ -212,6 +212,15 @@ class Scheduler:
                     req, hit_blocks, num_npu_hit, num_lower_hit):
                 # Its first chunk would fit but the whole sequence would not, so
                 # admitting it now only defers a preemption. vLLM breaks here.
+                if not self.running and not self.inflight and \
+                        self.kv.npu_pool.get_num_free_blocks() == self.kv.npu_pool.num_blocks:
+                    # Nothing is running and the whole pool is free: this
+                    # request can never be admitted. Fail now instead of
+                    # asking the backend forever.
+                    raise RuntimeError(
+                        f"[Scheduler] request {req.id} ({req.num_tokens_reached} tokens) can never "
+                        f"fit: the NPU KV pool has {self.kv.npu_pool.num_blocks} blocks of "
+                        f"{self.block_size} tokens; raise --npu-memory-utilization or the pool")
                 break
 
             blocks = self.kv.allocate_slots(req, num_new, hit_blocks,
