@@ -651,7 +651,13 @@ def main():
             prefix_pool = prefix_pools[prefix_pool_index]
         cxl_mem = 0
         if cluster["cxl_mem_size"] > 0:
-            cxl_mem = cluster["cxl_mem_size"]        
+            cxl_mem = cluster["cxl_mem_size"]
+        # A private (non-shared) lower tier may be sized per instance so that
+        # two private tiers and one shared pool can hold the same total bytes
+        # (plan §9 B, equal physical memory): instance-level cxl_mem.mem_size.
+        _inst_cxl = instance.get("cxl_mem", {}).get("mem_size") if isinstance(instance.get("cxl_mem"), dict) else None
+        if _inst_cxl is not None:
+            cxl_mem = float(_inst_cxl)
         
         # Make scheduler for each instance
 

@@ -62,16 +62,16 @@ class Router:
         else:
             self.prefill_rr_counter = value
 
-    def _rr_select(self, schedulers, role):
+    def _rr_select(self, schedulers, role, req_data=None):
         num_instances = len(schedulers)
         idx = self._get_counter(role) % num_instances
         self._set_counter(role, idx + 1)
         return idx
 
-    def _rand_select(self, schedulers, role):
+    def _rand_select(self, schedulers, role, req_data=None):
         return self._rnd.randrange(len(schedulers))
 
-    def _least_load_select(self, schedulers, role):
+    def _least_load_select(self, schedulers, role, req_data=None):
         """vLLM-style least-loaded routing, normalized by instance capacity."""
         best_idx = 0
         best_score = float('inf')
@@ -93,8 +93,15 @@ class Router:
         self._set_counter(role, (best_idx + 1) % num_instances)
         return best_idx
 
-    def _custom_select(self, schedulers, role):
-        raise NotImplementedError("Implement custom routing policy.")
+    def _custom_select(self, schedulers, role, req_data=None):
+        """Dataset-driven placement: a request row's ``instance_id`` (modulo
+        the instance count) picks the instance; rows without one fall back to
+        round robin. This is how an experiment pins load imbalance between
+        instances (plan §9 B: sweep imbalance) instead of leaving it to the
+        balancing policies."""
+        if req_data is not None and req_data.get("instance_id") is not None:
+            return int(req_data["instance_id"]) % len(schedulers)
+        return self._rr_select(schedulers, role)
 
     # -----------------------------------------------------------------------
     # Request loading and real-time routing
@@ -149,6 +156,8 @@ class Router:
         if enable_prefix_caching:
             req_data['input_hash_ids'] = row.get('input_tok_ids', [])
             req_data['output_hash_ids'] = row.get('output_tok_ids', [])
+        if row.get('instance_id') is not None:      # CUSTOM routing: dataset-pinned instance
+            req_data['instance_id'] = int(row['instance_id'])
         self._pending_requests.append(req_data)
 
     def _load_agentic_session(self, row, enable_prefix_caching):
@@ -198,7 +207,7 @@ class Router:
             if req_data['arrival_time_ns'] > current_time_ns:
                 break
 
-            instance_id = self._select_instance(self.prefill_schedulers, "prefill")
+            instance_id = self._select_instance(self.prefill_schedulers, "prefill", req_data)
             sched = self.prefill_schedulers[instance_id]
 
             if sched.enable_prefix_caching:
