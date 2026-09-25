@@ -1,0 +1,28 @@
+{
+  "spec_version": 1,
+  "name": "pool-c-custom4-dual",
+  "description": "The pool-a device attached to both switches of custom4_shared (one 100 GB/s port each): every rank reaches the bank without crossing the 4-5 link pair the two TP2 pairs share, so pool traffic and the collectives use genuinely disjoint links (G5 fixture 4 control).",
+  "access_mode": "staging",
+  "allocation_granularity_bytes": 65536,
+  "devices": [
+    {
+      "id": "pool0",
+      "capacity_gib": 512,
+      "bank_service_gbps": 400,
+      "controller_latency_ns": 300,
+      "attachments": [
+        {
+          "via": "switch:4",
+          "link_gbps": 100,
+          "link_latency_ns": 25
+        },
+        {
+          "via": "switch:5",
+          "link_gbps": 100,
+          "link_latency_ns": 25
+        }
+      ],
+      "queue_depth_pkts": 4000
+    }
+  ]
+}
