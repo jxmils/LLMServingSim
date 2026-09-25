@@ -1,0 +1,16 @@
+# One 4x H100 PCIe node (ARC HTC htc-g053-055) as a custom graph, from
+# nvidia-smi topo -m on htc-g055: GPU2-GPU3 are NV12 (NVLink bridge, 12 links
+# x 25 GB/s = 300 GB/s per direction), every other pair is "NODE" (PCIe through
+# the host bridges). Endpoints 0-3, device 4 = the PCIe host-bridge complex.
+# PCIe edge rate is the measured NCCL ring plateau on this node (all-reduce
+# busbw 18.6 GB/s = 17.3 GiB/s per direction, nccl-tests job 8892244).
+E 0 4 17.3
+E 4 0 17.3
+E 1 4 17.3
+E 4 1 17.3
+E 2 4 17.3
+E 4 2 17.3
+E 3 4 17.3
+E 4 3 17.3
+E 2 3 279.4
+E 3 2 279.4

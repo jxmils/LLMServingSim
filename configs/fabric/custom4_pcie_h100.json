@@ -1,0 +1,16 @@
+{
+  "spec_version": 1,
+  "name": "custom4-pcie-h100",
+  "description": "One 4x H100 PCIe node (htc-g053-055): endpoints 0-3 behind one PCIe host-bridge device (17.3 GiB/s per direction, the measured NCCL ring plateau) plus a direct NVLink bridge between GPUs 2 and 3 (279.4 GiB/s). 1500 ns per PCIe hop. Hardware validation tier 1 on the PCIe node; the vLLM TP4/TP2 bench runs on the same node type.",
+  "nodes": 4,
+  "panel": "custom",
+  "graph": "custom4_pcie_h100.graph",
+  "linkGiBps": 17.3,
+  "latencyNs": 1500,
+  "policy": "static",
+  "q": 90000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true,
+  "maxwin": 2097152
+}
