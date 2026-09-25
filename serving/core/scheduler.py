@@ -220,7 +220,7 @@ class Scheduler:
                     raise RuntimeError(
                         f"[Scheduler] request {req.id} ({req.num_tokens_reached} tokens) can never "
                         f"fit: the NPU KV pool has {self.kv.npu_pool.num_blocks} blocks of "
-                        f"{self.block_size} tokens; raise --npu-memory-utilization or the pool")
+                        f"{self.kv.block_size} tokens; raise --npu-memory-utilization or the pool")
                 break
 
             blocks = self.kv.allocate_slots(req, num_new, hit_blocks,
