@@ -1,0 +1,21 @@
+{
+  "spec_version": 1,
+  "name": "custom4-nvswitch-h100-cal",
+  "description": "Calibrated HGX H100 (SXM, NVSwitch) fabric for TP4: persistent channels, receiver-side completion, 4 MiB dataset splits (structural, from the PCIe-node calibration 2026-09-26); the 12 us launch floor and 300 ns hop are PROVISIONAL placeholders until nccl-tests on htc-g059/060 (job 8895379) gives this node's 8 B point and plateau.",
+  "nodes": 4,
+  "panel": "custom",
+  "graph": "custom4_nvswitch_h100.graph",
+  "linkGiBps": 419.1,
+  "latencyNs": 300,
+  "policy": "static",
+  "q": 90000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true,
+  "maxwin": 2097152,
+  "preconnected": true,
+  "recv_flow_finish": true,
+  "collective_launch_ns": 12000,
+  "dataset_split_bytes": 4194304,
+  "max_dataset_splits": 16
+}
