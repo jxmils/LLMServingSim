@@ -1,0 +1,19 @@
+{
+  "spec_version": 1,
+  "name": "pool-ideal-custom4",
+  "description": "Labelled ideal-access upper bound for experiment B (plan 9 B): the same pool endpoint as pool-a-custom4 but with a 100 TB/s attachment link and bank and a 0 ns controller, so a staged block arrives as fast as the fabric can carry it and the pool itself never bottlenecks. Not a hardware; a bound.",
+  "access_mode": "staging",
+  "allocation_granularity_bytes": 65536,
+  "devices": [
+    {
+      "id": "pool0",
+      "capacity_gib": 512,
+      "bank_service_gbps": 100000,
+      "controller_latency_ns": 0,
+      "attachments": [
+        {"via": "switch:4", "link_gbps": 100000, "link_latency_ns": 25}
+      ],
+      "queue_depth_pkts": 4000
+    }
+  ]
+}
