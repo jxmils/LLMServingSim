@@ -1,0 +1,17 @@
+{
+  "spec_version": 1,
+  "name": "static-4d2o-n64-normalized",
+  "description": "Pilot definition of the static configuration: the same 8x8 torus and two optical planes as hybrid-4d2o-n64-normalized with the planes frozen (-policy static, no -ocs): a fixed extra link pair per node, no reconfiguration. Normalized units. Not the campaign's plan-executor 'qualified static' (which replays an OCS plan); labelled as the pilot's own definition.",
+  "nodes": 64,
+  "panel": "hybrid",
+  "planes": 2,
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "planeLatencyNs": 55,
+  "policy": "static",
+  "q": 90000,
+  "nocc": true,
+  "maxwin": 2097152,
+  "seed": 1,
+  "nolog": true
+}

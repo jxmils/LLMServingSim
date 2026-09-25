@@ -1,0 +1,19 @@
+{
+  "spec_version": 1,
+  "name": "fullswitch-n64-normalized",
+  "description": "Fully switched N=64: no torus links, six optical planes leased adaptively (-panel fullswitch -planes 6 -policy adaptive -ocs), normalized units (93.132 GiB/s, 55 ns OCS whole-path, T_r 10 ns), the G3 circuit-state fixture's configuration. Pilot definition of the fully switched configuration.",
+  "nodes": 64,
+  "panel": "fullswitch",
+  "planes": 6,
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "planeLatencyNs": 55,
+  "policy": "adaptive",
+  "ocs": true,
+  "reconfNs": 10,
+  "q": 90000,
+  "nocc": true,
+  "maxwin": 2097152,
+  "seed": 1,
+  "nolog": true
+}
