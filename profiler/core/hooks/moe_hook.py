@@ -50,6 +50,7 @@ class ExpertRoute:
     layer_name: str
     weights: torch.Tensor
     ids: torch.Tensor
+    layer: object = None   # the MoE module the route targets (runner API patches its router)
 
     # ------------------------------------------------------------------
     # Construction
@@ -72,7 +73,7 @@ class ExpertRoute:
                 at least one token. Must satisfy
                 ``top_k <= activated_experts <= num_tokens * top_k``.
         """
-        top_k = layer.top_k
+        top_k = _layer_top_k(layer)
         if activated_experts < top_k:
             raise ValueError(
                 f"activated_experts ({activated_experts}) must be >= "
@@ -88,8 +89,15 @@ class ExpertRoute:
 
         # vLLM's router cares about the dtype of topk_ids: some kernels
         # expect int32, others a specific dtype reported by the router.
-        indices_dtype = layer.router._get_indices_type()
-        device = next(layer.parameters()).device
+        # Legacy FusedMoE routers report the indices dtype; the runner API
+        # passes it per call (topk_indices_dtype), which the hooked
+        # select_experts honours, so int32 is only the initial dtype here.
+        get_dtype = getattr(getattr(layer, "router", None), "_get_indices_type", None)
+        indices_dtype = get_dtype() if callable(get_dtype) else None
+        try:
+            device = next(layer.parameters()).device
+        except StopIteration:
+            device = torch.device("cuda", torch.cuda.current_device())
 
         ids = torch.tensor(
             ids_rows,
@@ -112,10 +120,44 @@ class ExpertRoute:
             dtype=torch.float32,
         )
         return cls(
-            layer_name=layer.layer_name,
+            layer_name=str(layer.layer_name),
             weights=weights,
             ids=ids,
+            layer=layer,
         )
+
+
+def _layer_top_k(layer) -> int:
+    """``top_k`` of a MoE module under either vLLM API: the legacy
+    ``FusedMoE`` class carries it directly; a ``MoERunner`` keeps it on its
+    router / routed_experts."""
+    for obj in (layer, getattr(layer, "router", None), getattr(layer, "routed_experts", None)):
+        k = getattr(obj, "top_k", None)
+        if k is not None:
+            return int(k)
+    raise AttributeError(f"cannot find top_k on MoE layer {type(layer).__name__}")
+
+
+def _moe_api():
+    """Which vLLM MoE API is installed.
+
+    Up to vLLM 0.19.0 ``FusedMoE`` is the layer class (forward_native +
+    ``self.router``). From 0.19.2 ``FusedMoE(...)`` is a factory returning a
+    ``MoERunner`` (``.router`` with ``select_experts``, ``.routed_experts``),
+    so ``isinstance(m, FusedMoE)`` raises and there is no forward_native to
+    patch; the router instance is hooked instead.
+    Returns ("runner", MoERunner) or ("legacy", FusedMoE)."""
+    try:
+        from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
+        return "runner", MoERunner
+    except ImportError:
+        pass
+    import inspect
+    from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+    if not inspect.isclass(FusedMoE):
+        raise RuntimeError("vLLM's FusedMoE is not a class and no MoERunner module was found; "
+                           "the MoE hook does not know this vLLM version")
+    return "legacy", FusedMoE
 
 
 def _cycle_expert_ids(
@@ -162,9 +204,49 @@ def force_moe_routing(route: ExpertRoute | None) -> Iterator[None]:
         yield
         return
 
-    # Local import so that host-side code doesn't pay the vLLM import
-    # cost just to read this module.
-    from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+    router = getattr(route.layer, "router", None)
+    if router is not None and hasattr(router, "select_experts") and hasattr(route.layer, "routed_experts"):
+        # MoERunner API: the runner calls self.router.select_experts(...) on
+        # the modular kernel path and hands the ids to routed_experts. Replace
+        # that one router's select_experts for the duration of the block.
+        qm = getattr(route.layer.routed_experts, "quant_method", None)
+        if qm is not None and getattr(qm, "is_monolithic", False):
+            raise RuntimeError(
+                f"MoE layer {route.layer_name}: quant method {type(qm).__name__} is monolithic "
+                "(routing happens inside the kernel), so forced routing cannot be applied; "
+                "pick a modular MoE kernel (e.g. the Triton fused_moe) for profiling")
+        top_k = _layer_top_k(route.layer)
+        original_select = router.select_experts
+
+        def forced_select_experts(*args, **kwargs):
+            hidden_states = kwargs.get("hidden_states", args[0] if args else None)
+            dtype = kwargs.get("topk_indices_dtype", args[2] if len(args) > 2 else None)
+            expected_shape = (hidden_states.shape[0], top_k)
+            if tuple(route.ids.shape) != expected_shape:
+                raise ValueError(
+                    f"Forged topk_ids shape mismatch for {route.layer_name}: "
+                    f"expected {expected_shape}, got {tuple(route.ids.shape)}"
+                )
+            ids = route.ids if dtype is None or route.ids.dtype == dtype else route.ids.to(dtype)
+            return route.weights, ids
+
+        router.select_experts = forced_select_experts
+        try:
+            yield
+        finally:
+            # instance attribute shadowed the bound method; drop it to restore
+            if router.__dict__.get("select_experts") is forced_select_experts:
+                del router.select_experts
+            else:
+                router.select_experts = original_select
+        return
+
+    # Legacy FusedMoE class API. Local import so that host-side code doesn't
+    # pay the vLLM import cost just to read this module.
+    api, FusedMoE = _moe_api()
+    if api != "legacy":
+        raise RuntimeError(f"MoE layer {route.layer_name} ({type(route.layer).__name__}) has no router "
+                           "to hook and vLLM has no legacy FusedMoE class")
 
     original_forward_native = FusedMoE.forward_native
 
@@ -244,10 +326,10 @@ def single_moe_layer(model_runner):
     If for some reason there are zero or more-than-one, raise so the
     caller can investigate rather than forge the wrong route.
     """
-    from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+    _, moe_cls = _moe_api()
 
     model = model_runner.get_model()
-    moe_layers = [m for m in model.modules() if isinstance(m, FusedMoE)]
+    moe_layers = [m for m in model.modules() if isinstance(m, moe_cls)]
     if len(moe_layers) != 1:
         raise RuntimeError(
             f"Expected exactly one FusedMoE layer in the test model, "
