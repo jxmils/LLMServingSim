@@ -183,6 +183,16 @@ def fuse_engine_kwargs(args: ProfileArgs, tp: int) -> dict[str, Any]:
                 f"{type(val).__name__}"
             )
         if val % tp != 0:
+            if field_name == "num_key_value_heads" and tp % val == 0:
+                # vLLM replicates a KV head on tp / kv_heads ranks once tp
+                # exceeds the KV-head count (Qwen3-30B-A3B: 4 KV heads at TP8),
+                # so the per-rank shape is one KV head, not a fraction of one.
+                log.info(
+                    "tp=%d exceeds num_key_value_heads=%d: profiling the "
+                    "replicated per-rank shape (1 KV head)", tp, val,
+                )
+                sharded_overrides[field_name] = 1
+                continue
             raise ValueError(
                 f"model config field {field_name!r}={val} is not "
                 f"divisible by tp={tp}; cannot TP-shard for profiling"
