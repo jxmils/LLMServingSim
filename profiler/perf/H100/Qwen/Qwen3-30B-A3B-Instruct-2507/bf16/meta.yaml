@@ -1,0 +1,38 @@
+profiler_version: 1.0.0
+vllm_version: 0.19.2.dev0+precompiled
+cuda_version: '12.9'
+gpu: NVIDIA H100 80GB HBM3
+hardware: H100
+profiled_at: '2026-09-25T23:12:25+00:00'
+architecture: qwen3_moe
+architecture_sha256: 784ed86cdd6b8a71c1c8cc82a5af96e49a70607e40ac8570b7b9341eb3dc5800
+model: Qwen/Qwen3-30B-A3B-Instruct-2507
+variant: bf16
+tp_degrees:
+- 1
+- 2
+- 4
+- 8
+engine_effective:
+  enforce_eager: true
+  load_format: dummy
+  max_num_batched_tokens: 2048
+  max_num_seqs: 256
+  tensor_parallel_size: 1
+attention_grid:
+  max_kv: 16384
+  chunk_factor: 2.0
+  kv_factor: 2.0
+  chunks: 0..2048 (9 points)
+  n_decode: 0..256 (10 points)
+  kv: 0..16384 (12 points)
+measurement_iterations: 3
+skew_profile:
+  enabled: false
+skew_fit:
+  enabled: false
+  note: no skew sweep; alpha = 0
+meta_written_offline:
+  by: serving/tools/write_bundle_meta.py
+  reason: 'HTC job 8894623 (SXM node htc-g060): profiler persist_meta died on a missing
+    pandas (skew fit only); every category CSV was complete'

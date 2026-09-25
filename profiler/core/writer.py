@@ -318,7 +318,12 @@ def _skew_fit_block(variant_root: Path, tp_degrees: list[int]) -> dict:
     profile grid). If TPs disagree, each entry keeps its own axes; the
     simulator handles both shapes.
     """
-    from profiler.core.fit_alpha import fit_alpha_per_tp
+    if not any((Path(variant_root) / f"tp{tp}" / "skew.csv").is_file() for tp in tp_degrees):
+        return {"enabled": False, "note": "no skew.csv in any tp folder (SKIP_SKEW or not yet profiled)"}
+    try:
+        from profiler.core.fit_alpha import fit_alpha_per_tp
+    except ImportError as e:   # pandas is a fit-only dependency; never lose meta.yaml over it
+        return {"enabled": False, "note": f"skew fit skipped: {e}"}
     fit = fit_alpha_per_tp(variant_root, tp_degrees)
     if not fit.get("enabled"):
         return fit
