@@ -1,0 +1,16 @@
+{
+  "spec_version": 1,
+  "name": "custom4-nvswitch-h100",
+  "description": "One HGX H100 8-GPU node for hardware validation against nccl-tests and vLLM TP8 on ARC HTC htc-g059/060: 4 endpoints (TP4 on one node) behind one switch device, 450 GB/s (419.1 GiB/s) per direction per GPU (NVLink4, 18 links x 25 GB/s), 500 ns per hop. Same units as the other custom fixtures.",
+  "nodes": 4,
+  "panel": "custom",
+  "graph": "custom4_nvswitch_h100.graph",
+  "linkGiBps": 419.1,
+  "latencyNs": 500,
+  "policy": "static",
+  "q": 90000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true,
+  "maxwin": 2097152
+}

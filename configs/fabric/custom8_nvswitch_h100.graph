@@ -1,0 +1,20 @@
+# One HGX H100 node as a custom graph: 8 endpoints (0-7) behind one switch
+# device (8) standing in for the 4 NVSwitches. Every GPU-switch link carries
+# the GPU's full NVLink4 capacity, 18 x 25 GB/s = 450 GB/s per direction
+# (419.1 GiB/s); latency per hop is the -latencyNs default.
+E 0 8 419.1
+E 8 0 419.1
+E 1 8 419.1
+E 8 1 419.1
+E 2 8 419.1
+E 8 2 419.1
+E 3 8 419.1
+E 8 3 419.1
+E 4 8 419.1
+E 8 4 419.1
+E 5 8 419.1
+E 8 5 419.1
+E 6 8 419.1
+E 8 6 419.1
+E 7 8 419.1
+E 8 7 419.1

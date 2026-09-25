@@ -1,0 +1,5 @@
+# One HGX H100 node used at TP2: 2 endpoints (0-1) behind one switch device (2); 419.1 GiB/s per direction per GPU, latency from -latencyNs.
+E 0 2 419.1
+E 2 0 419.1
+E 1 2 419.1
+E 2 1 419.1
