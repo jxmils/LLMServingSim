@@ -230,8 +230,14 @@ class MemoryModel():
         block_weight = 0
         _, ln_w, _ = calculate_sizes(self.model, 'layernorm', 1, parallel=tp, fp=fp)
         block_weight += ln_w  # input layernorm
-        _, qkv_w, _ = calculate_sizes(self.model, 'qkv_proj', 1, parallel=tp, fp=fp)
-        block_weight += qkv_w
+        if self.kv_layout.kind == "mla":
+            for name in ("q_a_proj", "q_a_layernorm", "q_b_proj", "kv_a_proj_with_mqa",
+                         "kv_a_layernorm", "kv_b_proj"):
+                _, w, _ = calculate_sizes(self.model, name, 1, parallel=tp, fp=fp)
+                block_weight += w
+        else:
+            _, qkv_w, _ = calculate_sizes(self.model, 'qkv_proj', 1, parallel=tp, fp=fp)
+            block_weight += qkv_w
         _, o_w, _ = calculate_sizes(self.model, 'o_proj', 1, parallel=tp, fp=fp)
         block_weight += o_w
         block_weight += ln_w  # post layernorm (same weight size)
@@ -506,6 +512,23 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
     # Equal to (q_dim + 2*kv_dim) // p whenever p divides both head counts.
     q_local = (n_head // p) * head_dim
     kv_local = max(kv_head // p, 1) * head_dim
+    # Multi-head latent attention (DeepSeek-V3, Kimi-K2): low-rank q/kv
+    # projections, per-head q/k width qk_nope + qk_rope, value width
+    # v_head_dim, and one latent (kv_lora + rope) per token shared by all
+    # heads. head_dim above is meaningless for these configs (no head_dim
+    # key: hidden // heads), so every MLA shape is derived here instead.
+    mla = "kv_lora_rank" in config
+    if mla:
+        q_lora = int(config.get("q_lora_rank") or 0)
+        kv_lora = int(config["kv_lora_rank"])
+        qk_nope = int(config.get("qk_nope_head_dim", 0))
+        qk_rope = int(config.get("qk_rope_head_dim", 0))
+        v_head = int(config.get("v_head_dim", qk_nope))
+        heads_local = max(n_head // p, 1)
+        mla_q_local = heads_local * (qk_nope + qk_rope)
+        mla_v_local = heads_local * v_head
+        mla_latent = kv_lora + qk_rope
+        q_dim = n_head * v_head          # o_proj input width (all heads)
 
     # NOTE (vLLM-style assumptions):
     # - Embedding / LM head: vocab-parallel → split vocab_size across ranks.
@@ -532,9 +555,47 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
 
     # ----------------- RoPE & Attention Core -----------------
     elif layer_name == "rotary_emb":
-        input_size = (q_local + kv_local) * length * fp
+        n = (heads_local * qk_rope + qk_rope) if mla else (q_local + kv_local)
+        input_size = n * length * fp
         weight_size = 0
-        output_size = (q_local + kv_local) * length * fp
+        output_size = n * length * fp
+
+    # ----------------- MLA projections -----------------
+    elif layer_name == "q_a_proj":
+        input_size = length * n_embd * fp
+        weight_size = n_embd * q_lora * fp                   # replicated
+        output_size = length * q_lora * fp
+
+    elif layer_name == "q_a_layernorm":
+        input_size = length * q_lora * fp
+        weight_size = q_lora * fp
+        output_size = length * q_lora * fp
+
+    elif layer_name == "q_b_proj":
+        input_size = length * q_lora * fp
+        weight_size = q_lora * mla_q_local * fp
+        output_size = length * mla_q_local * fp
+
+    elif layer_name == "kv_a_proj_with_mqa":
+        input_size = length * n_embd * fp
+        weight_size = n_embd * mla_latent * fp               # replicated
+        output_size = length * mla_latent * fp               # the cached latent
+
+    elif layer_name == "kv_a_layernorm":
+        input_size = length * kv_lora * fp
+        weight_size = kv_lora * fp
+        output_size = length * kv_lora * fp
+
+    elif layer_name == "kv_b_proj":
+        input_size = length * kv_lora * fp
+        weight_size = kv_lora * heads_local * (qk_nope + v_head) * fp
+        output_size = length * heads_local * (qk_nope + v_head) * fp
+
+    elif layer_name == "attention" and mla:
+        kv_len = length if kv_len is None else kv_len
+        input_size = mla_q_local * length * fp + mla_latent * kv_len * fp
+        weight_size = 0
+        output_size = mla_v_local * length * fp
 
     elif layer_name == "attention":
         if not pim:
@@ -559,8 +620,9 @@ def calculate_sizes(model, layer_name, length, kv_len=None, pim=False, parallel=
         output_size = length * (q_local + 2 * kv_local) * fp
 
     elif layer_name == "o_proj":
-        input_size = length * (q_dim // p) * fp
-        weight_size = (q_dim // p) * n_embd * fp
+        o_in = mla_v_local if mla else (q_dim // p)
+        input_size = length * o_in * fp
+        weight_size = o_in * n_embd * fp
         output_size = length * n_embd * fp
 
     elif layer_name == "gate_up_proj":

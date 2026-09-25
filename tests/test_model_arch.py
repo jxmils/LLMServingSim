@@ -70,5 +70,23 @@ def test_llama4_weight_matches_the_port_check():
 
 def test_support_check_now_admits_mixed_moe():
     assert unsupported_features(_raw("meta-llama/Llama-4-Maverick-17B-128E-Instruct.json")) == []
-    ds = unsupported_features(_raw("deepseek-ai/DeepSeek-V3.json"))
-    assert len(ds) == 1 and "MLA" in ds[0]
+    assert unsupported_features(_raw("deepseek-ai/DeepSeek-V3.json")) == []
+
+
+def test_mla_sizes_and_weights_match_the_port_check():
+    m = "deepseek-ai/DeepSeek-V3"
+    _, w_qa, out_qa = calculate_sizes(m, "q_a_proj", 1, parallel=1, fp=2)
+    assert w_qa == 7168 * 1536 * 2 and out_qa == 1536 * 2
+    _, w_kva, out_kva = calculate_sizes(m, "kv_a_proj_with_mqa", 1, parallel=8, fp=2)
+    assert w_kva == 7168 * 576 * 2 and out_kva == 576 * 2          # replicated, latent output
+    _, w_qb, _ = calculate_sizes(m, "q_b_proj", 1, parallel=8, fp=2)
+    assert w_qb == 1536 * (128 // 8) * 192 * 2                      # TP-sharded heads
+    _, w_o, _ = calculate_sizes(m, "o_proj", 1, parallel=8, fp=2)
+    assert w_o == (128 // 8) * 128 * 7168 * 2                       # v_head_dim, not hidden // heads
+    inp, _, out = calculate_sizes(m, "attention", 4, kv_len=100, parallel=8, fp=2)
+    assert inp == 16 * 192 * 4 * 2 + 576 * 100 * 2 and out == 16 * 128 * 4 * 2
+    for model, params in (("deepseek-ai/DeepSeek-V3", 671.026e9), ("moonshotai/Kimi-K2-Thinking", 1026.408e9)):
+        mm = MemoryModel(model, 0, 0, 1, 1, 4000, 1, 16, 16, False, False, None, None, ep_size=1, pp_size=1)
+        assert abs(mm.weight / 2 - params) / params < 0.002, model
+    assert unsupported_features(_raw("deepseek-ai/DeepSeek-V3.json")) == []
+    assert unsupported_features(_raw("moonshotai/Kimi-K2-Thinking.json")) == []

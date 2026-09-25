@@ -23,13 +23,15 @@ def unsupported_features(config: Dict) -> List[str]:
     ``text_config`` wrapper, ``n_routed_experts``, a mixed layer schedule
     (``first_k_dense_replace``, ``moe_layers`` / ``interleave_moe_layer_step``)
     and shared experts (``n_shared_experts``, Llama 4's implicit shared
-    expert). Still refused: MLA attention, whose projections and KV reads
-    differ from the GQA shapes the trace generator emits."""
+    expert); MLA attention (low-rank q/kv projections, latent KV) through the
+    deepseek_v3 / kimi_k2 catalogs and calculate_sizes. Still refused: MLA
+    configs without ``q_lora_rank`` (their attention has a direct q_proj the
+    catalogs do not list)."""
     problems = []
     config = decoder_config(config)
-    if "kv_lora_rank" in config or "q_lora_rank" in config:
-        problems.append("MLA attention (kv_lora_rank/q_lora_rank): the trace generator emits "
-                        "GQA-shaped q/k/v projections and KV reads")
+    if "kv_lora_rank" in config and not config.get("q_lora_rank"):
+        problems.append("MLA without q_lora_rank (DeepSeek-V2-Lite style direct q_proj): the "
+                        "catalog emits q_a_proj/q_a_layernorm/q_b_proj")
     layout = moe_layout(config)
     if layout is not None and not layout.moe_layers:
         problems.append("MoE model whose layer schedule resolves to no MoE layer "

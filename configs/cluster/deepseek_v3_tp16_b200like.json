@@ -1,0 +1,31 @@
+{
+    "num_nodes": 1,
+    "link_bw": 450,
+    "link_latency": 500,
+    "nodes": [
+        {
+            "num_instances": 1,
+            "cpu_mem": {
+                "mem_size": 2048,
+                "mem_bw": 256,
+                "mem_latency": 0
+            },
+            "instances": [
+                {
+                    "model_name": "deepseek-ai/DeepSeek-V3",
+                    "hardware": "B200LIKE",
+                    "npu_mem": {
+                        "mem_size": 180,
+                        "mem_bw": 8000,
+                        "mem_latency": 0,
+                        "mem_util": 0.9
+                    },
+                    "num_npus": 16,
+                    "tp_size": 16,
+                    "ep_size": 16,
+                    "pd_type": null
+                }
+            ]
+        }
+    ]
+}

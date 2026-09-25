@@ -14,6 +14,7 @@ import bisect
 from dataclasses import dataclass, field
 from . import shape_manifest
 from . import model_arch
+from .kv_layout import KVLayout
 
 # ----------------------------------------------------------------------
 # Global in-memory cache for the profiler's per-category performance DB.
@@ -1103,9 +1104,9 @@ def _pd_kv_send_bytes(ctx, bctx):
     if tokens <= 0:
         return 0
     # KV heads resident on this rank (replicated when tp exceeds kv_head), not
-    # the model-wide KV divided by tp; equal while tp divides kv_head.
-    kv_local = max(ctx.kv_head // max(ctx.tp_size, 1), 1) * ctx.head_dim
-    return 2 * kv_local * tokens * ctx.kv_fp
+    # the model-wide KV divided by tp; equal while tp divides kv_head. For MLA
+    # the per-layer bytes are the latent, unsharded (KVLayout).
+    return KVLayout.from_config(ctx.config, ctx.kv_fp).bytes_per_token_per_layer(ctx.tp_size) * tokens
 
 
 def _tp_comm(ctx, layer_name, total_len, collective='ALLREDUCE'):
@@ -1312,7 +1313,7 @@ def _emit_sequence(ctx, bctx, layer_num, layers, lines, power_acc, batch_tag):
             comm_size, comm_type = _tp_comm(ctx, layer_name, bctx.total_len)
             _emit_layer(ctx, bctx, layer_name, lines, power_acc, batch_tag, layer_num,
                         comm_type=_with_dim(comm_type, ctx.tp_dim), comm_size=comm_size)
-        elif layer_name == 'qkv_proj' and ctx.pd_type == 'prefill':
+        elif layer_name in ('qkv_proj', 'kv_a_proj_with_mqa') and ctx.pd_type == 'prefill':
             # P/D disaggregation: this layer's KV has to reach the paired decode
             # instance. The Chakra converter's PREFILL path emits a point-to-point
             # send after every *v_proj layer and takes the byte count from the

@@ -1,0 +1,41 @@
+profiler_version: synthesized-1.0
+provenance: analytically_estimated
+provenance_note: Every time_us in this bundle is computed from a roofline, not measured.
+  Report it as analytically estimated.
+roofline:
+  formula: time = max(flops / (peak * achieved_fraction), bytes / hbm_bandwidth) +
+    kernel_floor
+  peak_dense_tflops: 2250
+  achieved_fraction: 0.7
+  kernel_floor_us: 5.0
+  hbm_bandwidth_gbps: 8000
+hardware_spec:
+  name: b200-like
+  sha256: 4a907ff036d84e59f50b43092150908c16d1170207a57f899ce16545003f9f8c
+  source: /Volumes/My Passport/panel-serving-20260924/LLMServingSim/configs/specs/hardware/b200-like.json
+model_spec:
+  name: deepseek-v3
+  sha256: 260a7d22917ee3de333655c445b232e9d6b6053e36182c28b9e530ba344a2970
+  source: /Volumes/My Passport/panel-serving-20260924/LLMServingSim/configs/specs/model/deepseek-v3.json
+hardware: B200LIKE
+model: deepseek-ai/DeepSeek-V3
+variant: bf16
+architecture: qwen3_moe
+tp_degrees:
+- 1
+- 16
+engine_effective:
+  max_num_seqs: 256
+  max_num_batched_tokens: 2048
+  tensor_parallel_size: 1
+  dtype: bfloat16
+attention_grid:
+  source: default cross product
+  points: 68960
+skew_fit:
+  enabled: false
+  note: no skew sweep for synthesized bundles; alpha = 0
+timings_include:
+  communication: false
+  dma: false
+  offload: false

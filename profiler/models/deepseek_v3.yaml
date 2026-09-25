@@ -1,0 +1,99 @@
+# DeepSeek-V3 / V3.1 / R1 (deepseek_v3) — class catalog: MoE decoder with multi-head latent attention (MLA),
+# dense first layers (first_k_dense_replace) and one shared expert per MoE
+# layer (n_shared_experts).
+#
+# MLA replaces the fused qkv_proj by low-rank projections: q_a_proj
+# (d -> q_lora_rank, replicated) -> q_a_layernorm -> q_b_proj (-> heads x
+# (qk_nope + qk_rope), TP-sharded), kv_a_proj_with_mqa (d -> kv_lora_rank +
+# qk_rope, replicated; its output is the cached latent) -> kv_a_layernorm ->
+# kv_b_proj (-> heads x (qk_nope + v), TP-sharded). The KV cache holds the
+# latent, so a P/D prefill instance ships the kv_a_proj_with_mqa output.
+# The attention kernel reads the latent per token (not sharded by heads).
+#
+# Layer schedule from the config: layers below first_k_dense_replace run the
+# dense FFN (intermediate_size); MoE layers run the shared expert
+# (n_shared_experts x moe_intermediate_size, emitted as three dense layers)
+# and the routed block. The trace generator picks the path per layer.
+#
+# Canonical layer names mirror vLLM's attribute names (see
+# ../vllm/vllm/model_executor/models/deepseek_v2.py, class DeepseekV3ForCausalLM).
+
+
+sequence:
+  prologue:  [embedding]
+  pre_attn:  [layernorm, q_a_proj, q_a_layernorm, q_b_proj, kv_a_proj_with_mqa, kv_a_layernorm, kv_b_proj, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: [gate_up_proj, act_fn, down_proj]
+  mlp_moe:   [shared_gate_up_proj, shared_act_fn, shared_down_proj, moe]
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: RMSNorm
+      within: DeepseekV2DecoderLayer
+      tp_stable: true
+    q_a_proj:
+      vllm: ReplicatedLinear
+      within: DeepseekV2MLAAttention
+      tp_stable: true
+    q_a_layernorm:
+      vllm: RMSNorm
+      within: DeepseekV2MLAAttention
+      tp_stable: true
+    q_b_proj:
+      vllm: ColumnParallelLinear
+      within: DeepseekV2MLAAttention
+    kv_a_proj_with_mqa:
+      vllm: ReplicatedLinear
+      within: DeepseekV2MLAAttention
+      tp_stable: true
+    kv_a_layernorm:
+      vllm: RMSNorm
+      within: DeepseekV2MLAAttention
+      tp_stable: true
+    kv_b_proj:
+      vllm: ColumnParallelLinear
+      within: DeepseekV2MLAAttention
+    rotary_emb:
+      vllm: DeepseekScalingRotaryEmbedding
+    o_proj:
+      vllm: RowParallelLinear
+      within: DeepseekV2MLAAttention
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: DeepseekV2MLP
+    act_fn:
+      vllm: SiluAndMul
+      within: DeepseekV2MLP
+    down_proj:
+      vllm: RowParallelLinear
+      within: DeepseekV2MLP
+    shared_gate_up_proj:
+      vllm: MergedColumnParallelLinear
+      within: DeepseekV2MoE.shared_experts
+    shared_act_fn:
+      vllm: SiluAndMul
+      within: DeepseekV2MoE.shared_experts
+    shared_down_proj:
+      vllm: RowParallelLinear
+      within: DeepseekV2MoE.shared_experts
+    final_layernorm:
+      vllm: RMSNorm
+      within: DeepseekV3ForCausalLM
+      tp_stable: true
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+  attention:
+    attention:
+      vllm: MLAAttention
+  moe:
+    moe:
+      vllm: DeepseekV2MoE

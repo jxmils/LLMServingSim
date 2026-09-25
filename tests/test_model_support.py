@@ -18,21 +18,18 @@ def test_supported_models_pass():
         assert unsupported_features(_cfg(rel)) == [], rel
 
 
-def test_mla_is_the_remaining_refusal():
-    ds = unsupported_features(_cfg("deepseek-ai/DeepSeek-V3.json"))
-    assert len(ds) == 1 and "MLA" in ds[0]
-    km = unsupported_features(_cfg("moonshotai/Kimi-K2-Thinking.json"))
-    assert len(km) == 1 and "MLA" in km[0]
+def test_deepseek_and_kimi_are_admitted():
+    for rel in ("deepseek-ai/DeepSeek-V3.json", "moonshotai/Kimi-K2-Thinking.json"):
+        assert unsupported_features(_cfg(rel)) == [], rel
 
 
 def test_llama4_interleaved_moe_is_admitted():
-    # text_config wrapper, odd-layer MoE and the shared expert are modelled
-    # (serving/core/model_arch.py); nothing left to refuse.
     assert unsupported_features(_cfg("meta-llama/Llama-4-Maverick-17B-128E-Instruct.json")) == []
 
 
-def test_check_raises_with_every_reason():
+def test_check_raises_for_a_direct_q_mla_config():
+    cfg = dict(_cfg("deepseek-ai/DeepSeek-V3.json"))
+    cfg.pop("q_lora_rank")
     with pytest.raises(ValueError) as e:
-        check_frontend_support("deepseek-ai/DeepSeek-V3", _cfg("deepseek-ai/DeepSeek-V3.json"))
-    msg = str(e.value)
-    assert "MLA" in msg and "trace_generator.py" in msg
+        check_frontend_support("deepseek-lite-like", cfg)
+    assert "q_lora_rank" in str(e.value) and "trace_generator.py" in str(e.value)

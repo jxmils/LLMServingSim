@@ -48,7 +48,9 @@ ATTN_ND = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256]
 DENSE_LAYERS = ["embedding", "layernorm", "qkv_proj", "qk_norm", "rotary_emb", "o_proj", "final_layernorm"]
 DENSE_FFN_LAYERS = ["gate_up_proj", "act_fn", "down_proj"]                        # dense layers (all of a dense model, the non-MoE layers of a mixed one)
 SHARED_FFN_LAYERS = ["shared_gate_up_proj", "shared_act_fn", "shared_down_proj"]  # shared experts on MoE layers
-TP_STABLE = {"layernorm", "qk_norm", "final_layernorm", "sampler"}
+MLA_LAYERS = ["q_a_proj", "q_a_layernorm", "q_b_proj", "kv_a_proj_with_mqa", "kv_a_layernorm", "kv_b_proj"]
+TP_STABLE = {"layernorm", "qk_norm", "final_layernorm", "sampler",
+             "q_a_proj", "q_a_layernorm", "kv_a_proj_with_mqa", "kv_a_layernorm"}   # replicated MLA projections
 
 
 class Roofline:
@@ -95,7 +97,13 @@ class Shapes:
         if self.attention_kind == "mla":
             att = model["attention"]
             self.kv_lora_rank = int(att["kv_lora_rank"])
+            self.q_lora_rank = int(att["q_lora_rank"])
             self.rope_dim = int(att["qk_rope_head_dim"])
+            self.nope_dim = int(att["qk_nope_head_dim"])
+            self.v_dim = int(att["v_head_dim"])
+            self.q_local = self.heads_local * (self.nope_dim + self.rope_dim)   # q/k width per rank
+            self.v_local = self.heads_local * self.v_dim                         # o_proj input per rank
+            self.latent = self.kv_lora_rank + self.rope_dim
 
     # ---- dense (tokens) ----
     def dense(self, layer: str, t: int) -> Tuple[float, float]:
@@ -114,7 +122,23 @@ class Shapes:
             n = self.q_local + self.kv_local
             return 6.0 * t * n, 2 * t * n * fp
         if layer == "o_proj":
-            return 2.0 * t * self.q_local * d, (self.q_local * d + t * (self.q_local + d)) * fp
+            o_in = self.v_local if self.attention_kind == "mla" else self.q_local
+            return 2.0 * t * o_in * d, (o_in * d + t * (o_in + d)) * fp
+        if self.attention_kind == "mla":
+            def lin(i, o):
+                return 2.0 * t * i * o, (i * o + t * (i + o)) * fp
+            if layer == "q_a_proj":
+                return lin(d, self.q_lora_rank)
+            if layer == "q_a_layernorm":
+                return 5.0 * t * self.q_lora_rank, 2 * t * self.q_lora_rank * fp
+            if layer == "q_b_proj":
+                return lin(self.q_lora_rank, self.q_local)
+            if layer == "kv_a_proj_with_mqa":
+                return lin(d, self.latent)
+            if layer == "kv_a_layernorm":
+                return 5.0 * t * self.kv_lora_rank, 2 * t * self.kv_lora_rank * fp
+            if layer == "kv_b_proj":
+                return lin(self.kv_lora_rank, self.heads_local * (self.nope_dim + self.v_dim))
         ffn = None
         if layer in ("gate_up_proj", "act_fn", "down_proj"):
             ffn = self.dense_ff // self.tp
@@ -148,11 +172,11 @@ class Shapes:
                 + (pc + nd) * self.q_local * self.fp * 2
             return flops, nbytes
         # MLA: absorbed latent of kv_lora_rank + rope part is read per token; heads share it
-        latent = (self.kv_lora_rank + self.rope_dim) * self.fp
+        latent = self.latent * self.fp
         prefill_pairs = pc * (kvp + pc / 2.0)
         decode_pairs = nd * kvd
-        flops = 4.0 * self.heads_local * (self.kv_lora_rank + self.rope_dim) * (prefill_pairs + decode_pairs)
-        nbytes = latent * ((kvp + pc) * (1 if pc else 0) + nd * kvd) + (pc + nd) * self.q_local * self.fp * 2
+        flops = 4.0 * self.heads_local * self.latent * (prefill_pairs + decode_pairs)
+        nbytes = latent * ((kvp + pc) * (1 if pc else 0) + nd * kvd) + (pc + nd) * (self.q_local + self.v_local) * self.fp
         return flops, nbytes
 
     # ---- MoE (local tokens, activated experts), profiled at tp=1 ----
@@ -226,6 +250,8 @@ def synthesize(hw, model, tps: List[int], perf_root: str, variant: str = "bf16",
         os.makedirs(d, exist_ok=True)
         rows = []
         layers = list(DENSE_LAYERS)
+        if sh.attention_kind == "mla":
+            layers = [l for l in layers if l not in ("qkv_proj", "qk_norm")] + MLA_LAYERS
         if sh.has_dense_layers and sh.dense_ff:
             layers += DENSE_FFN_LAYERS
         if sh.moe and sh.shared_ff:
