@@ -66,6 +66,10 @@ def register_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--kv-cache-dtype", default="auto",
                    dest="kv_cache_dtype",
                    help="vLLM kv_cache_dtype.")
+    p.add_argument("--enforce-eager", action="store_true", dest="enforce_eager",
+                   help="vLLM enforce_eager: no torch.compile / CUDA graphs. Use when the "
+                        "installed vLLM cannot compile the model; the profiler measures "
+                        "kernels in eager mode too, so this is the like-for-like setting.")
     p.add_argument("--seed", type=int, default=42,
                    help="Sampling seed for vLLM.")
     p.add_argument("--tick-seconds", type=float, default=1.0,
@@ -157,6 +161,7 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         dtype=args.dtype,
         kv_cache_dtype=args.kv_cache_dtype,
         seed=args.seed,
+        enforce_eager=args.enforce_eager,
         disable_log_stats=False,
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
