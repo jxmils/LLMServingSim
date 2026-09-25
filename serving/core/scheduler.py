@@ -36,7 +36,7 @@ class Scheduler:
                  enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage,
                  enable_chunked_prefill=False,
                  long_prefill_token_threshold=0, cxl_mem=0, ep_size=1, kv_cache_dtype='auto',
-                 npu_memory_utilization=1.0, reserve_full_isl=True):
+                 npu_memory_utilization=1.0, reserve_full_isl=True, npu_workspace_bytes=None):
         self.model = model
         self.config = get_config(model)
         self.node_id = node_id
@@ -80,7 +80,8 @@ class Scheduler:
                                   block_size, fp, enable_prefix_caching, enable_prefix_sharing,
                                   prefix_pool, prefix_storage, cxl_mem, ep_size=ep_size,
                                   pp_size=pp_size, kv_cache_dtype=kv_cache_dtype,
-                                  npu_memory_utilization=npu_memory_utilization)
+                                  npu_memory_utilization=npu_memory_utilization,
+                                  npu_workspace_bytes=npu_workspace_bytes)
         self.kv = self.memory.kv
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)

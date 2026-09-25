@@ -44,7 +44,7 @@ _SCHEMA: Dict[str, Dict[str, set]] = {
                      "precisions", "timings_include"},
         "allowed": {"provenance", "compute", "hbm_capacity_gib", "hbm_bandwidth_gbps",
                     "precisions", "timings_include", "execution_resources", "dma",
-                    "frontend_hardware_label"},
+                    "frontend_hardware_label", "workspace_gib"},
     },
     "fabric": {  # validated by panel_backend.FabricSpec; registered here only
         "required": {"nodes"},
@@ -132,6 +132,16 @@ def _check_hardware(raw: dict, path: str) -> None:
         if not isinstance(inc.get(key), bool):
             raise ValueError(f"{path}: hardware.timings_include.{key} must be true/false "
                              "(the backend must not charge these twice)")
+    # workspace_gib: the per-rank bytes held outside weights and KV (activation
+    # peak, CUDA context, kernel workspaces). When present it replaces the
+    # utilization fraction: KV = hbm - weights - workspace (G5 design 2.3).
+    if "workspace_gib" in raw:
+        ws = raw["workspace_gib"]
+        if isinstance(ws, bool) or not isinstance(ws, (int, float)) or ws < 0:
+            raise ValueError(f"{path}: hardware.workspace_gib must be a non-negative number of GiB")
+        if ws >= float(raw["hbm_capacity_gib"]):
+            raise ValueError(f"{path}: hardware.workspace_gib ({ws}) must be below hbm_capacity_gib "
+                             f"({raw['hbm_capacity_gib']})")
 
 
 def _check_memory_pool(raw: dict, path: str) -> None:

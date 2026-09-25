@@ -27,7 +27,8 @@ class MemoryModel():
     an allocation that cannot be satisfied says so in the call that asks.
     """
 
-    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto', npu_memory_utilization=1.0):
+    def __init__(self, model, instance_id, node_id, num_npus, tp_size, npu_mem, cpu_mem, block_size, fp, enable_prefix_caching, enable_prefix_sharing, prefix_pool, prefix_storage, cxl_mem=0, ep_size=1, pp_size=1, kv_cache_dtype='auto', npu_memory_utilization=1.0,
+                 npu_workspace_bytes=None):
         self.model = model
         self.node_id = node_id
         self.instance_id = instance_id
@@ -45,6 +46,9 @@ class MemoryModel():
         self.enable_prefix_sharing = enable_prefix_sharing
         self.prefix_storage = prefix_storage
         self.npu_memory_utilization = npu_memory_utilization
+        # Explicit per-rank reservation outside weights and KV (HardwareSpec
+        # workspace_gib or npu_mem.workspace_gib); None = utilization fraction.
+        self.npu_workspace_bytes = None if npu_workspace_bytes is None else int(npu_workspace_bytes)
 
         self.config = get_config(model)
         self.n_embd = self.config['hidden_size']
@@ -80,16 +84,27 @@ class MemoryModel():
         # subtract the non-KV memory (weights, and the activation peak plus CUDA
         # context, which the simulator cannot profile and does not model -- so
         # this capacity is an upper bound on vLLM's at the same utilization).
-        requested = int(self.npu_mem * self.npu_memory_utilization)
-        kv_bytes = requested - self.weight
+        # With an explicit workspace (G5 design 2.3) the budget is exact:
+        # KV = hbm - weights - workspace, and the fraction is not applied.
+        if self.npu_workspace_bytes is not None:
+            requested = int(self.npu_mem)
+            kv_bytes = requested - self.weight - self.npu_workspace_bytes
+            budget_desc = (f"workspace {self.npu_workspace_bytes / MB_TO_BYTE:.2f}MB leaves "
+                           f"{kv_bytes / MB_TO_BYTE:.2f}MB for the KV cache "
+                           f"({self.npu_mem / MB_TO_BYTE:.2f}MB minus "
+                           f"{self.weight / MB_TO_BYTE:.2f}MB of weights and the workspace)")
+        else:
+            requested = int(self.npu_mem * self.npu_memory_utilization)
+            kv_bytes = requested - self.weight
+            budget_desc = (f"npu_memory_utilization={self.npu_memory_utilization} leaves "
+                           f"{kv_bytes / MB_TO_BYTE:.2f}MB for the KV cache "
+                           f"({requested / MB_TO_BYTE:.2f}MB requested of "
+                           f"{self.npu_mem / MB_TO_BYTE:.2f}MB, minus "
+                           f"{self.weight / MB_TO_BYTE:.2f}MB of weights)")
         if kv_bytes < self._npu_bytes_per_block:
             raise RuntimeError(
                 f"[MemoryModel] [node={self.node_id},inst={self.instance_id}]: "
-                f"npu_memory_utilization={self.npu_memory_utilization} leaves "
-                f"{kv_bytes / MB_TO_BYTE:.2f}MB for the KV cache "
-                f"({requested / MB_TO_BYTE:.2f}MB requested of "
-                f"{self.npu_mem / MB_TO_BYTE:.2f}MB, minus "
-                f"{self.weight / MB_TO_BYTE:.2f}MB of weights), which is less "
+                f"{budget_desc}, which is less "
                 f"than one {block_size}-token block "
                 f"({self._npu_bytes_per_block / MB_TO_BYTE:.2f}MB)"
             )
@@ -101,11 +116,11 @@ class MemoryModel():
             node_id=node_id, instance_id=instance_id,
         )
         self.logger.info(
-            "NPU: KV cache %d blocks (%d tokens, %.2fMB) at utilization %.2f",
+            "NPU: KV cache %d blocks (%d tokens, %.2fMB) %s",
             self.npu_pool.num_blocks,
             self.npu_pool.num_blocks * block_size,
             self.npu_pool.num_blocks * self._npu_bytes_per_block / MB_TO_BYTE,
-            self.npu_memory_utilization,
+            self.budget_label(),
         )
 
         # Victim tiers, in lookup order. Present only with --prefix-storage:
@@ -155,6 +170,12 @@ class MemoryModel():
         return build_prefix_pool(prefix_storage, capacity, self.block_size,
                                  self._cluster_bytes_per_token,
                                  node_id=self.node_id, instance_id=self.instance_id)
+
+    def budget_label(self):
+        """How the KV capacity was derived, for logs and the run banner."""
+        if self.npu_workspace_bytes is not None:
+            return f"with workspace {self.npu_workspace_bytes / GB_TO_BYTE:.2f} GiB"
+        return f"at util {self.npu_memory_utilization:.2f}"
 
     def get_weight(self):
         """Per-GPU model weight in bytes.

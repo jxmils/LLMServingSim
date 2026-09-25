@@ -187,6 +187,27 @@ def _resolve_instance_dtype(instance, cli_dtype, dtype_to_bits):
     return dtype
 
 
+def _resolve_workspace_bytes(instance):
+    """Per-instance explicit reservation from ``npu_mem.workspace_gib`` (GiB
+    per rank), or None. When set it replaces ``mem_util``: KV capacity is
+    ``mem_size - weights - workspace`` (G5 design 2.3). A HardwareSpec's
+    ``workspace_gib`` applies to every instance with that hardware label that
+    does not set its own."""
+    ws = instance.get("npu_mem", {}).get("workspace_gib")
+    if ws is None:
+        return None
+    try:
+        ws = float(ws)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"npu_mem.workspace_gib for instance {instance.get('instance_id')} must be a "
+            f"number of GiB; got {ws!r}"
+        ) from None
+    if ws < 0:
+        raise ValueError(f"npu_mem.workspace_gib for instance {instance.get('instance_id')} must be >= 0")
+    return int(ws * GB_TO_BYTE)
+
+
 def _resolve_mem_util(instance, cli_default):
     """Per-instance NPU memory utilization, from ``npu_mem.mem_util``.
 
@@ -247,6 +268,7 @@ def _build_instance_runtime_configs(instances, args, dtype_to_bits):
                 "enable_prefix_caching", args.enable_prefix_caching),
             "npu_memory_utilization": _resolve_mem_util(
                 instance, args.npu_memory_utilization),
+            "npu_workspace_bytes": _resolve_workspace_bytes(instance),
             "reserve_full_isl": instance.get("reserve_full_isl", args.reserve_full_isl),
             "enable_local_offloading": instance.get(
                 "enable_local_offloading", args.enable_local_offloading),
@@ -473,6 +495,8 @@ def main():
     # Automatic network, memory configuration
     # If you want to set more specific information such as latency, look at config.py and each json file
     simulator_prefix = []
+    # HardwareSpec workspace_gib (htsim path): (frontend label, bytes per rank)
+    hardware_workspace = None
     if network_backend == 'analytical':
         network=run_paths.network_config
         binary=os.path.join(astra_sim, "build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra")
@@ -508,6 +532,9 @@ def main():
         violations = _specs.cross_check(run_specs)
         if violations:
             raise ValueError('specification cross-check failed: ' + '; '.join(violations))
+        if 'hardware' in run_specs and run_specs['hardware'].data.get('workspace_gib') is not None:
+            hardware_workspace = (run_specs['hardware'].data.get('frontend_hardware_label'),
+                                  int(float(run_specs['hardware'].data['workspace_gib']) * GB_TO_BYTE))
         # Refuse a model the trace generator would execute as something else
         # (MLA attention, partly-dense MoE, ...): see model_support.py.
         from serving.core.model_support import check_frontend_support as _check_support
@@ -635,6 +662,10 @@ def main():
             kv_cache_dtype=inst_cfg["kv_cache_dtype"],
             npu_memory_utilization=inst_cfg["npu_memory_utilization"],
             reserve_full_isl=inst_cfg["reserve_full_isl"],
+            npu_workspace_bytes=(inst_cfg["npu_workspace_bytes"] if inst_cfg["npu_workspace_bytes"] is not None
+                                 else (hardware_workspace[1] if hardware_workspace is not None and
+                                       (hardware_workspace[0] is None or hardware_workspace[0] == instance.get("hardware"))
+                                       else None)),
         ))
 
     # The derived KV capacity, not the utilization fraction, is what decides
@@ -652,7 +683,7 @@ def main():
             f"  \u2022 [cyan]{label:<{pad + 1}}[/cyan] : "
             f"{pool.num_blocks * pool.block_size} tokens / {pool.num_blocks} blocks "
             f"({pool.num_blocks * pool.bytes_per_block / GB_TO_BYTE:.2f} GiB/rank "
-            f"at util {sched.memory.npu_memory_utilization:.2f})"
+            f"{sched.memory.budget_label()})"
         )
     print_rule()
 

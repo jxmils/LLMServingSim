@@ -1,0 +1,21 @@
+{
+  "spec_version": 1,
+  "name": "h100-sxm",
+  "description": "NVIDIA H100 SXM5 80 GB as installed in Oxford ARC HTC htc-g059/060 (8 per node, NVLink4 NVSwitch). Roofline fields from the datasheet (dense BF16 989 TFLOPS, HBM3 3.35 TB/s, 80 GB); the profile bundle used with this spec (profiler/perf/H100) is measured on that node type by the LLMServingSim profiler, so runs on it carry the bundle's own provenance, not this roofline's. workspace_gib is to be set from a vLLM bench run of the same model/TP with serving/tools/workspace_from_bench.py (hardware validation tier 3); until then the instance's mem_util applies.",
+  "provenance": "analytically_estimated",
+  "frontend_hardware_label": "H100",
+  "compute": {
+    "peak_dense_tflops": 989,
+    "precision": "bf16",
+    "kernel_floor_us": 5.0,
+    "achieved_fraction": 0.7,
+    "model": "time = max(flops / (peak * achieved_fraction), bytes / hbm_bandwidth) + kernel_floor"
+  },
+  "hbm_capacity_gib": 79.6,
+  "hbm_bandwidth_gbps": 3350,
+  "precisions": ["bf16", "fp8"],
+  "execution_resources": {"in_flight_compute_ops": 1, "in_flight_comm_ops": 1},
+  "dma": {"engines": 1, "notes": "memory-pool transfers are network flows (G5)"},
+  "timings_include": {"communication": false, "dma": false, "offload": false},
+  "notes": "80 GB = 74.5 GiB nominal; vLLM reports 79.6 GiB usable on these boards (check meta.json hardware.total_memory_bytes and correct here). NVLink4: 18 links x 25 GB/s per direction = 450 GB/s per GPU per direction, modelled by configs/fabric/custom{2,4,8}_nvswitch_h100."
+}
