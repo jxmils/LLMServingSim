@@ -1,0 +1,16 @@
+{
+  "spec_version": 1,
+  "name": "custom2-pcie-h100",
+  "description": "TP2 on the 4x H100 PCIe node (CUDA devices 0 and 1: PCIe through the host bridges, no NVLink bridge): two endpoints behind one PCIe device at the measured 17.3 GiB/s per direction, 1500 ns per hop.",
+  "nodes": 2,
+  "panel": "custom",
+  "graph": "custom2_pcie_h100.graph",
+  "linkGiBps": 17.3,
+  "latencyNs": 1500,
+  "policy": "static",
+  "q": 90000,
+  "nocc": true,
+  "seed": 1,
+  "nolog": true,
+  "maxwin": 2097152
+}
