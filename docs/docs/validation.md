@@ -54,6 +54,22 @@ latency metric moving with it:
 | `mem_util: 0.9` (default) | 54,400 | 3,400 | -20.7% | +12.9% | -12.5% |
 | `mem_util: 0.833919` (matched) | 41,408 | 2,588 | **+0.6%** | **+0.2%** | **+0.5%** |
 
+Instead of solving for a fraction by hand, let the tool do it and pin the
+reservation explicitly:
+
+```bash
+python -m serving.tools.workspace_from_bench bench/results/<run>/meta.json \
+    --model meta-llama/Llama-3.1-8B --tp 1
+# ... workspace_gib  3.984
+```
+
+and put that number in the instance as `"npu_mem": {..., "workspace_gib": 3.984}`
+(or in a HardwareSpec's `workspace_gib`). The simulator then budgets
+`mem_size - weights - workspace` and prints `with workspace X GiB` in the
+KV Cache Initialization banner instead of `at util 0.9`; the block count
+equals `num_gpu_blocks` by construction, and the value is a physical
+quantity you can compare across models and TP degrees.
+
 The three RTXPRO6000 configurations peak at 58-97% of their budget on a 96 GB
 card, so they stay at `0.9` — calibrating them would change nothing. If you
 validate against your own vLLM run, check the peak `Each NPU Memory Usage` in

@@ -222,6 +222,7 @@ other instance keeps the CLI value.
 | `enable_chunked_prefill` | bool | `--enable-chunked-prefill` | Enable chunked prefill in this instance's scheduler |
 | `enable_prefix_caching` | bool | `--enable-prefix-caching` | Enable this instance's local prefix cache |
 | `npu_mem.mem_util` | float | `--npu-memory-utilization` | Fraction of `npu_mem.mem_size` usable for weights plus KV cache. KV capacity is `mem_size * mem_util - model weight`, divided into `block_size` blocks |
+| `npu_mem.workspace_gib` | float | none | Explicit per-rank reservation (activation peak, CUDA context, kernel workspaces) in GiB. When set, `mem_util` is **not** applied: KV capacity is `mem_size - model weight - workspace_gib`. `python -m serving.tools.workspace_from_bench` derives it from a vLLM bench run's `meta.json` so the block count matches the engine exactly |
 | `reserve_full_isl` | bool | `--reserve-full-isl` | Admit only if the request's whole sequence fits, not just its first chunk |
 | `enable_local_offloading` | bool | `--enable-local-offloading` | Emit graph conversion with local offloading for this instance |
 | `enable_attn_offloading` | bool | `--enable-attn-offloading` | Emit PIM attention offload for this instance |

@@ -247,6 +247,18 @@ have completely separate NPU accounting, even though they're on the same
 physical GPU. `npu_used` is derived from the pool rather than tracked
 alongside it, so there is exactly one ledger per tier.
 
+Every run also writes two diagnostic files next to its `--output` CSV:
+`<output>.ledger/` (per-tier block-state time series and byte-time
+integrals) and `<output>.manifest.json`, the **shape manifest**: every
+profile-bundle cell the trace generator looked up — category, layer, TP,
+the query (`tokens`, `sequences`, the four attention axes, or
+`tokens`/`activated_experts` for MoE), how it resolved against the profiled
+grid (`exact`, `interpolated`, `extrapolated`, `clamped`) with the two
+bracketing profiled values, the returned time and the hit count, plus a
+per-category summary. A run with many `extrapolated` cells is standing on a
+bundle that was not profiled for its shapes; the distinct cells are also the
+list of shapes a cycle-level GPU simulator would need to trace.
+
 `cpu_used` is **per-node**. Two instances on the same node share one
 CPU memory budget. If both have spilled prefix blocks to CPU, they
 compete for the same `cpu_mem.mem_size` capacity.
