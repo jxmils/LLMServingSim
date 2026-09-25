@@ -398,6 +398,10 @@ def main():
     
     args.run_id = resolve_run_id(args.run_id)
     run_paths = build_run_paths(astra_sim, args.run_id, args.inputs_root)
+    # shape manifest: every profile-bundle cell this run looks up (written next
+    # to the per-request CSV at the end; see serving/core/shape_manifest.py)
+    from serving.core import shape_manifest as _shape_manifest
+    _shape_manifest.enable()
     args.inputs_root = run_paths.inputs_root
     args.output = _resolve_output_file(args.output, args.run_id)
 
@@ -1372,6 +1376,23 @@ def main():
         print(f"KV ledger written to {ledger_dir}")
     except Exception as e:   # the ledger must never turn a finished run into a failure
         print(f"KV ledger not written: {e}")
+    # Shape manifest (profile-bundle cells this run depended on, and how each
+    # resolved: exact / interpolated / extrapolated / clamped).
+    try:
+        _m = _shape_manifest.get()
+        if _m is not None:
+            manifest_path = (os.path.splitext(output_file)[0] + '.manifest.json') if output_file \
+                else os.path.join(run_paths.inputs_root, 'shape_manifest.json')
+            _m.write(manifest_path, header={
+                "run_id": args.run_id, "dataset": getattr(args, "dataset", None),
+                "cluster_config": getattr(args, "cluster_config", None),
+                "network_backend": getattr(args, "network_backend", None),
+                "max_num_seqs": getattr(args, "max_num_seqs", None),
+                "max_num_batched_tokens": getattr(args, "max_num_batched_tokens", None),
+            })
+            print(f"Shape manifest written to {manifest_path}: {_m.one_line()}")
+    except Exception as e:   # same rule as the ledger
+        print(f"Shape manifest not written: {e}")
 
     # --save-trace-text writes the text into the run directory, so keeping it
     # is implied: producing the text and then deleting it would be pointless.

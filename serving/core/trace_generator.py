@@ -12,6 +12,7 @@ from .logger import get_logger
 from .run_paths import input_path
 import bisect
 from dataclasses import dataclass, field
+from . import shape_manifest
 
 # ----------------------------------------------------------------------
 # Global in-memory cache for the profiler's per-category performance DB.
@@ -392,6 +393,9 @@ def _load_perf_db(hardware, model, variant, tp_needed, model_type):
     }
     _perf_db_cache[cache_key] = perf_db
     _check_tp_coverage(perf_db, tp_needed, hardware, model, variant)
+    _m = shape_manifest.get()
+    if _m is not None:
+        _m.bundle(perf_db)
     return perf_db
 
 
@@ -555,7 +559,13 @@ def _lookup_dense(perf_db, name, tp, tokens):
             f"Missing dense profile for layer={name} on tp={tp_eff}. "
             f"Check that the architecture catalog and dense.csv agree."
         )
-    return max(1, int(_lookup_1d(tbl["keys"], tbl["values"], max(int(tokens), 1))))
+    q = max(int(tokens), 1)
+    out = max(1, int(_lookup_1d(tbl["keys"], tbl["values"], q)))
+    _m = shape_manifest.get()
+    if _m is not None:
+        _m.record("dense", name, tp_eff, {"tokens": q},
+                  {"tokens": shape_manifest.mode_1d(tbl["keys"], q)}, out)
+    return out
 
 
 def _lookup_per_sequence(perf_db, name, tp, sequences):
@@ -565,7 +575,13 @@ def _lookup_per_sequence(perf_db, name, tp, sequences):
         raise KeyError(
             f"Missing per-sequence profile for layer={name} on tp={tp_eff}."
         )
-    return max(1, int(_lookup_1d(tbl["keys"], tbl["values"], max(int(sequences), 1))))
+    q = max(int(sequences), 1)
+    out = max(1, int(_lookup_1d(tbl["keys"], tbl["values"], q)))
+    _m = shape_manifest.get()
+    if _m is not None:
+        _m.record("per_sequence", name, tp_eff, {"sequences": q},
+                  {"sequences": shape_manifest.mode_1d(tbl["keys"], q)}, out)
+    return out
 
 
 def _axis_bracket(values, query):
@@ -858,7 +874,25 @@ def _lookup_attention(perf_db, tp, prefill_chunk, kv_prefill, n_decode, kv_decod
     v0 = c00 + t_nd * (c01 - c00)
     v1 = c10 + t_nd * (c11 - c10)
     out = v0 + t_pc * (v1 - v0)
-    return max(1, int(out))
+    out = max(1, int(out))
+    _m = shape_manifest.get()
+    if _m is not None:
+        kpq, kdq = max(int(kv_prefill), 0), max(int(kv_decode), 0)
+        axes = {"prefill_chunk": shape_manifest.mode_1d(pc_vals, pcq),
+                "n_decode": shape_manifest.mode_1d(nd_vals, ndq)}
+        sl = tbl["slices"].get((pc_vals[lo_pc], nd_vals[lo_nd]))
+        if sl is None or not sl["kv_prefill_vals"]:
+            axes["kv_prefill"] = ("missing", None, None); axes["kv_decode"] = ("missing", None, None)
+        else:
+            kp_vals = sl["kv_prefill_vals"]
+            axes["kv_prefill"] = shape_manifest.mode_1d(kp_vals, kpq)
+            i = bisect.bisect_right(kp_vals, kpq)
+            row = sl["rows"][min(max(i - 1, 0), len(sl["rows"]) - 1)]
+            axes["kv_decode"] = shape_manifest.mode_1d(row["keys"], kdq)
+        _m.record("attention", "attention", tp,
+                  {"prefill_chunk": pcq, "kv_prefill": kpq, "n_decode": ndq, "kv_decode": kdq},
+                  axes, out)
+    return out
 
 
 def _lookup_moe(perf_db, tokens, activated_experts):
@@ -879,10 +913,16 @@ def _lookup_moe(perf_db, tokens, activated_experts):
     lo, hi = _lookup_bounds(ae_vals, aeq)
     val_lo = _lookup_1d(rows[lo]["keys"], rows[lo]["values"], tokq)
     if lo == hi:
-        return max(1, int(val_lo))
-    val_hi = _lookup_1d(rows[hi]["keys"], rows[hi]["values"], tokq)
-    out = _linear_interpolate(ae_vals[lo], val_lo, ae_vals[hi], val_hi, aeq)
-    return max(1, int(out))
+        out = max(1, int(val_lo))
+    else:
+        val_hi = _lookup_1d(rows[hi]["keys"], rows[hi]["values"], tokq)
+        out = max(1, int(_linear_interpolate(ae_vals[lo], val_lo, ae_vals[hi], val_hi, aeq)))
+    _m = shape_manifest.get()
+    if _m is not None:
+        _m.record("moe", "moe", tp_eff, {"tokens": tokq, "activated_experts": aeq},
+                  {"tokens": shape_manifest.mode_1d(rows[lo]["keys"], tokq),
+                   "activated_experts": shape_manifest.mode_1d(ae_vals, aeq)}, out)
+    return out
 
 
 def _catalog_has(perf_db, category, name):
