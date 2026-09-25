@@ -545,7 +545,17 @@ def main():
             _cluster = json.load(_f)
         for _node in _cluster.get('nodes', []):
             for _inst in _node.get('instances', []):
-                _check_support(_inst['model_name'], _get_model_config(_inst['model_name']))
+                _cfg = _get_model_config(_inst['model_name'])
+                _check_support(_inst['model_name'], _cfg)
+                # The Chakra converter attaches the prefill->decode KV send to
+                # layers whose name contains "v_proj"; an MLA model's cached
+                # latent comes out of kv_a_proj_with_mqa, which it does not
+                # match, so a P/D prefill instance of such a model would ship
+                # no KV at all. Refuse until the converter rule is extended.
+                if _inst.get('pd_type') == 'prefill' and 'kv_lora_rank' in _cfg:
+                    raise ValueError(f"instance {_inst.get('instance_id')} ({_inst['model_name']}): "
+                                     "P/D prefill with MLA attention is not supported yet -- the Chakra "
+                                     "converter emits the KV send only after *v_proj layers")
         resolved_path = _specs.emit_resolved(run_specs, os.path.join(run_paths.inputs_root, 'specs'),
                                              extra={'run_id': args.run_id, 'network_backend': network_backend,
                                                     'cluster_config': args.cluster_config})
