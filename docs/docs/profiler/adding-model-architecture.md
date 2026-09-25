@@ -24,6 +24,9 @@ and compare against the bundled architectures:
 | `qwen3_moe` | `qwen3_moe.yaml` | Qwen3 MoE (30B-A3B, 235B-A22B) |
 | `mixtral` | `mixtral.yaml` | `MixtralForCausalLM` (8x7B, 8x22B) |
 | `phimoe` | `phimoe.yaml` | `PhiMoEForCausalLM` (Phi-3.5-MoE) |
+| `llama4` (config `model_type: llama4_text` under `text_config`) | `llama4.yaml` | Llama 4 Scout / Maverick: MoE on odd layers with one shared expert, dense even layers (`intermediate_size_mlp`); the multimodal wrapper is flattened by `serving/core/model_arch.py` |
+| `deepseek_v3` | `deepseek_v3.yaml` | DeepSeek-V3 / V3.1 / R1: MLA attention (`q_a_proj` .. `kv_b_proj`, latent KV), first `first_k_dense_replace` layers dense, `n_routed_experts` + `n_shared_experts` |
+| `kimi_k2` | `kimi_k2.yaml` | Kimi-K2 / K2-Thinking: DeepSeek-V3 architecture with 384 routed experts |
 
 If your `model_type` is one of these, you don't need to do anything
 - the existing YAML handles it.
@@ -312,17 +315,4 @@ without touching Python.
 ## Where this gets validated
 
 Once your YAML is in, the bundled `bench/` validation suite is the
-sanity check: run vLLM end-to-end on the new model + run the same
-workload through the simulator + see how close they match. If
-TTFT / TPOT / throughput are all within ~5%, your YAML + (optional)
-trace_generator changes are good.
-
-See [`bench/README.md`](https://github.com/casys-kaist/LLMServingSim/tree/main/bench) on
-GitHub for the validation methodology and per-model results.
-
-## What's next
-
-- **[Output bundle](./output-bundle)**: what CSVs the profiler
-  produces given a working YAML.
-- **[Simulator → Trace generation](/docs/simulator/trace-generation)** -
-  what trace_generator does at runtime walking your `sequence:`.
+sanity check: run vLLM end-to-end on the new model + run t

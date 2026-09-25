@@ -44,7 +44,7 @@ def main(argv=None):
         hbm_bytes = int(a.hbm_gib * GB_TO_BYTE)
     else:
         hw = meta.get("hardware") or {}
-        for key in ("total_memory_bytes", "total_memory"):
+        for key in ("device_total_memory_bytes", "total_memory_bytes", "total_memory"):
             if key in hw:
                 hbm_bytes = int(hw[key]); break
     if hbm_bytes is None:
