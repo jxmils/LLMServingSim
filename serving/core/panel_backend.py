@@ -151,26 +151,33 @@ def logical_npu_count(network_config_path: str) -> int:
     return total
 
 
-def flatten_network_config(network_config_path: str, out_path: Optional[str] = None) -> str:
-    """Write the panel backend's copy of network.yml as one dimension.
+def kept_dimensions(npus_count) -> List[int]:
+    """Indices of the network dimensions the panel backend keeps: every
+    dimension of size > 1. The system layer builds each collective's ring
+    from these dimensions (dimension 0 is an instance's tensor-parallel
+    group, dimension 1 the instances), so they must be preserved -- a
+    two-instance TP2 cluster flattened to one dimension of 4 made every
+    TP all-reduce a 4-rank ring across both instances, and the instances
+    deadlocked waiting on each other's graphs. A dimension of size 1 (the
+    frontend writes [1, 3] for a prefill/decode cluster) is dropped because
+    astra-network-analytical's parser refuses it and no collective can run
+    on it."""
+    dims = [int(d) for d in npus_count]
+    keep = [i for i, d in enumerate(dims) if d > 1]
+    return keep if keep else [0]
 
-    The htsim frontend reads network.yml only for the rank count (it routes
-    on its own fabric), but it does so through astra-network-analytical's
-    parser, which refuses any dimension of size 1 -- and the frontend writes
-    e.g. `npus_count: [1, 3]` for a prefill/decode cluster. The per-dimension
-    bandwidth/latency are meaningless to the panel path and are copied from
-    the first dimension only so the file stays well formed.
-    """
+
+def flatten_network_config(network_config_path: str, out_path: Optional[str] = None) -> str:
+    """Write the panel backend's copy of network.yml without size-1
+    dimensions (see kept_dimensions)."""
     import yaml
     with open(network_config_path, "r", encoding="utf-8") as f:
         topo = yaml.safe_load(f)
-    total = logical_npu_count(network_config_path)
+    keep = kept_dimensions(topo["npus_count"])
     flat = dict(topo)
-    flat["topology"] = [topo["topology"][0]] if isinstance(topo.get("topology"), list) else ["FullyConnected"]
-    flat["npus_count"] = [int(total)]
-    for key in ("bandwidth", "latency"):
+    for key in ("topology", "npus_count", "bandwidth", "latency"):
         if isinstance(topo.get(key), list) and topo[key]:
-            flat[key] = [topo[key][0]]
+            flat[key] = [topo[key][i] for i in keep if i < len(topo[key])]
     if out_path is None:
         base, _ = os.path.splitext(network_config_path)
         out_path = base + ".panel.yml"
@@ -179,18 +186,18 @@ def flatten_network_config(network_config_path: str, out_path: Optional[str] = N
     return out_path
 
 
-def flatten_system_config(system_config_path: str, out_path: Optional[str] = None) -> str:
-    """Write the panel backend's copy of system.json with one network
-    dimension: the per-dimension collective implementation lists are cut to
-    their first entry to match the flattened network.yml (the system layer
-    asserts that they do not exceed the dimension count). The panel fabric
-    does not use these implementations' dimension structure."""
+def flatten_system_config(system_config_path: str, out_path: Optional[str] = None,
+                          keep: Optional[List[int]] = None) -> str:
+    """Write the panel backend's copy of system.json whose per-dimension
+    collective implementation lists match the kept network dimensions (the
+    system layer asserts that they do not exceed the dimension count)."""
     with open(system_config_path, "r", encoding="utf-8") as f:
         sysc = json.load(f)
     flat = dict(sysc)
     for key, val in sysc.items():
         if key.endswith("-implementation") and isinstance(val, list) and len(val) > 1:
-            flat[key] = [val[0]]
+            idx = keep if keep is not None else list(range(len(val)))
+            flat[key] = [val[i] for i in idx if i < len(val)] or [val[0]]
     if out_path is None:
         base, _ = os.path.splitext(system_config_path)
         out_path = base + ".panel.json"
@@ -275,6 +282,12 @@ def pool_configuration_path(fabric: FabricSpec) -> Optional[str]:
     return path
 
 
+def _kept_dims(network_config_path: str) -> List[int]:
+    import yaml
+    with open(network_config_path, "r", encoding="utf-8") as f:
+        return kept_dimensions(yaml.safe_load(f)["npus_count"])
+
+
 def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
                        system_config: str, network_config: str,
                        memory_config: str, start_npu_ids: str = "",
@@ -316,7 +329,7 @@ def build_backend_args(binary: str, fabric: FabricSpec, workload: str,
             "--chakra-send-admission=" + chakra_send_admission,
             "--chakra-runtime-unit=ns",
             "--workload-configuration=" + workload,
-            "--system-configuration=" + flatten_system_config(system_config),
+            "--system-configuration=" + flatten_system_config(system_config, keep=_kept_dims(network_config)),
             "--network-configuration=" + flatten_network_config(network_config),
             "--remote-memory-configuration=" + panel_memory]
     if start_npu_ids != "":

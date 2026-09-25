@@ -76,7 +76,7 @@ def test_backend_args_check_rank_count(tmp_path):
     panel_mem = str(tmp_path / "memory_expansion.panel.json")
     assert "--remote-memory-configuration=" + panel_mem in args
     assert "--system-configuration=" + str(tmp_path / "s.panel.json") in args
-    assert json.load(open(tmp_path / "s.panel.json"))["all-reduce-implementation"] == ["ring"]
+    assert json.load(open(tmp_path / "s.panel.json"))["all-reduce-implementation"] == ["ring", "ring"]
     assert "--network-configuration=" + str(tmp_path / "network.panel.yml") in args
     assert not any(a.startswith("--memory-configuration=") for a in args)
     with pytest.raises(ValueError, match="chakra_send_admission"):
@@ -192,6 +192,13 @@ def test_network_config_is_flattened_to_one_dimension(tmp_path):
     assert flat["npus_count"] == [3] and flat["topology"] == ["FullyConnected"]
     assert flat["bandwidth"] == [16.0] and flat["latency"] == [20000.0]
     assert logical_npu_count(out) == 3
+    # a multi-instance cluster keeps its dimensions: dimension 0 is the TP
+    # group, dimension 1 the instances; collapsing them made every TP
+    # all-reduce span both instances (deadlock)
+    two = tmp_path / "net22.yml"
+    two.write_text("topology: [FullyConnected, FullyConnected]\nnpus_count: [2, 2]\nbandwidth: [16.0, 32.0]\nlatency: [1.0, 2.0]\n")
+    kept = yaml.safe_load(open(flatten_network_config(str(two))))
+    assert kept["npus_count"] == [2, 2] and kept["bandwidth"] == [16.0, 32.0]
 
 
 def test_system_config_collective_lists_follow_the_flattened_network(tmp_path):
@@ -199,6 +206,8 @@ def test_system_config_collective_lists_follow_the_flattened_network(tmp_path):
     src = tmp_path / "system.json"
     json.dump({"scheduling-policy": "LIFO", "all-reduce-implementation": ["ring", "ring"],
                "all-gather-implementation": ["ring", "ring"], "local-mem-bw": 50}, open(src, "w"))
-    out = json.load(open(flatten_system_config(str(src))))
+    out = json.load(open(flatten_system_config(str(src), keep=[1])))
     assert out["all-reduce-implementation"] == ["ring"] and out["all-gather-implementation"] == ["ring"]
+    both = json.load(open(flatten_system_config(str(src), keep=[0, 1])))
+    assert both["all-reduce-implementation"] == ["ring", "ring"]
     assert out["local-mem-bw"] == 50 and out["scheduling-policy"] == "LIFO"
