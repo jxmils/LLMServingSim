@@ -44,6 +44,7 @@ def test_compose_appends_endpoint_and_bank_past_highest_id(tmp_path):
     assert abs(float(edges[(4, 6)][0]) - 100e9 / 2**30) < 1e-6
     spec = json.load(open(out))
     assert spec["graph"] == "composed.graph" and spec["memory_pool_spec"].endswith("pool-a-custom4.json")
+    assert spec["maxwin"] == 2097152 and spec["q"] == 90000   # large transfers under -nocc
     cfg = json.load(open(tmp_path / "composed.pool.json"))
     assert cfg["tensor_loc_pool"] == {"CXL": "pool0"} and cfg["pools"][0]["capacity_bytes"] == 512 * 2**30
     # the composed fabric loads as a FabricSpec and names its backend pool config

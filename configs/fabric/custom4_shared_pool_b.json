@@ -8,9 +8,10 @@
   "linkGiBps": 93.132,
   "latencyNs": 25,
   "policy": "static",
-  "q": 4000,
+  "q": 90000,
   "nocc": true,
   "seed": 1,
   "nolog": true,
+  "maxwin": 2097152,
   "memory_pool_spec": "../specs/memory_pool/pool-b-custom4-bankbound.json"
 }

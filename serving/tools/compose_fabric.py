@@ -89,6 +89,13 @@ def compose(base_spec_path: str, pool_spec_path: str, out_spec_path: str) -> dic
                            f"'{pool['name']}' by compose_fabric.py: pool endpoint/bank devices appended "
                            f"past the base graph's highest id.")
     spec["graph"] = os.path.basename(out_graph)
+    # Pool transfers are tens of MiB. Under -nocc the window is the whole
+    # message unless capped, and a window larger than the queue loses
+    # packets, whose retransmit timeouts (0.25 s, doubling) stall a serving
+    # run for simulated centuries. Pin the hybrid fixtures' 2 MiB window and
+    # 90k-packet queue on every composed fabric.
+    spec.setdefault("maxwin", 2097152)
+    spec["q"] = max(int(spec.get("q", 0)), 90000)
     spec["memory_pool_spec"] = os.path.relpath(os.path.abspath(pool_spec_path), os.path.dirname(os.path.abspath(out_spec_path)))
     with open(out_spec_path, "w") as f:
         json.dump(spec, f, indent=2)
