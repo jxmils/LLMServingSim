@@ -22,7 +22,10 @@ the original helper returns a nullcontext as well: no computation changes.
 The rewritten modules are compiled from source (their cached bytecode is
 ignored) and nothing is written anywhere. (2) The same build reads an
 undeclared ObservabilityConfig field (track_gpu_coll_op_timings) in its
-collective wrapper; the class gets a False default when it lacks one.
+collective wrapper (and track_moe_stats in its MoE-stats tracer); the class
+gets False defaults when it lacks them. (3) BaseRouter._select_experts syncs
+the host (.item()) on every call to count invalid expert ids, which breaks
+CUDA-graph capture; the count becomes 0 (only the disabled stats path reads it).
 
 How. Put this directory first on PYTHONPATH; every interpreter, including
 vLLM's spawned workers, imports sitecustomize at start-up. Set
@@ -70,11 +73,36 @@ class _Strip(ast.NodeTransformer):
     visit_AsyncWith = _items
 
 
-def rewrite(source, path):
+def _fix_router(tree):
+    """BaseRouter._select_experts counts out-of-range expert ids on every call
+    with a ``.item()`` host sync: illegal while a CUDA graph is being captured
+    (cudaErrorStreamCaptureUnsupported) and a per-MoE-layer sync outside it,
+    neither in upstream vLLM. Only the (disabled) MoE-stats event reads the
+    count; it becomes the constant 0."""
+    n = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_select_experts":
+            for st in node.body:
+                if isinstance(st, ast.Assign) and len(st.targets) == 1 \
+                        and isinstance(st.targets[0], ast.Attribute) \
+                        and st.targets[0].attr == "last_invalid_expert_id_count":
+                    st.value = ast.copy_location(ast.Constant(value=0), st.value)
+                    n += 1
+    return n
+
+
+_MODULE_FIXES = {"vllm.model_executor.layers.fused_moe.router.base_router": _fix_router}
+
+
+def rewrite(source, path, fullname=None):
     """Return (code object, n rewritten) for a module source."""
     tree = ast.parse(source, filename=path)
     t = _Strip()
     tree = t.visit(tree)
+    fix = _MODULE_FIXES.get(fullname)
+    extra = fix(tree) if fix is not None else 0
+    if extra:
+        ast.fix_missing_locations(tree)
     if t.count:
         body = tree.body
         i = 0
@@ -87,7 +115,7 @@ def rewrite(source, path):
         ast.copy_location(imp, body[i] if i < len(body) else body[-1])
         body.insert(i, imp)
         ast.fix_missing_locations(tree)
-    return compile(tree, path, "exec", dont_inherit=True), t.count
+    return compile(tree, path, "exec", dont_inherit=True), t.count + extra
 
 
 class _Loader(importlib.machinery.SourceFileLoader):
@@ -95,9 +123,9 @@ class _Loader(importlib.machinery.SourceFileLoader):
         path = self.get_filename(fullname)
         data = self.get_data(path)
         text = data.decode("utf-8")
-        if _HELPER + "(" not in text:
+        if _HELPER + "(" not in text and fullname not in _MODULE_FIXES:
             return super().get_code(fullname)
-        code, n = rewrite(text, path)
+        code, n = rewrite(text, path, fullname)
         if n:
             REWRITTEN.append((path, n))
             if os.environ.get("HWVAL_STRIP_NVTX_VERBOSE") == "1":
@@ -114,9 +142,10 @@ def _observability_defaults(module):
     current and die on AttributeError. Default it to False: timing off,
     which is what the eager runs did."""
     cls = getattr(module, "ObservabilityConfig", None)
-    if cls is not None and not hasattr(cls, "track_gpu_coll_op_timings"):
-        cls.track_gpu_coll_op_timings = False
-        PATCHED.append("ObservabilityConfig.track_gpu_coll_op_timings=False")
+    for field in ("track_gpu_coll_op_timings", "track_moe_stats"):
+        if cls is not None and not hasattr(cls, field):
+            setattr(cls, field, False)
+            PATCHED.append(f"ObservabilityConfig.{field}=False")
 
 
 _POST_IMPORT = {"vllm.config.observability": _observability_defaults}
