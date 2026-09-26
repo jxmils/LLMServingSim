@@ -1,0 +1,4 @@
+{"input_toks": 10, "output_toks": 4, "arrival_time_ns": 0, "input_tok_ids": [42445, 19772, 51750, 85319, 6328, 9494, 70239, 12337, 47931, 76387], "instance_id": 0}
+{"input_toks": 10, "output_toks": 4, "arrival_time_ns": 0, "input_tok_ids": [7602, 66510, 28140, 4914, 11265, 56838, 54810, 9156, 31544, 11889], "instance_id": 1}
+{"input_toks": 10, "output_toks": 4, "arrival_time_ns": 0, "input_tok_ids": [72226, 55642, 7747, 74115, 16226, 29260, 82657, 82238, 76414, 8108], "instance_id": 2}
+{"input_toks": 10, "output_toks": 4, "arrival_time_ns": 0, "input_tok_ids": [75642, 76748, 51993, 6499, 28977, 6105, 72963, 17455, 37959, 54937], "instance_id": 3}

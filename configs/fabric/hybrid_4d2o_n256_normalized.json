@@ -1,0 +1,19 @@
+{
+  "spec_version": 1,
+  "name": "hybrid-4d2o-n256-normalized",
+  "description": "16x16 torus + 2 OCS planes, N=256, same normalized units as hybrid-4d2o-n64-normalized (93.132 GiB/s per direction, 25 ns direct, 55 ns OCS whole-path, T_r 10 ns sensitivity assumption); the panel builder's torus2d at 256 nodes. Panel-scale serving capability run.",
+  "nodes": 256,
+  "panel": "hybrid",
+  "planes": 2,
+  "linkGiBps": 93.132,
+  "latencyNs": 25,
+  "planeLatencyNs": 55,
+  "policy": "directpref",
+  "ocs": true,
+  "reconfNs": 10,
+  "q": 90000,
+  "nocc": true,
+  "maxwin": 2097152,
+  "seed": 1,
+  "nolog": true
+}
