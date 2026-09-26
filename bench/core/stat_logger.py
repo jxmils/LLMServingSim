@@ -28,6 +28,7 @@ class _Sample:
     num_generation_tokens: int  # tokens decoded this iteration
     kv_cache_pct: float
     engine_idx: int
+    engine_ts: float = float("nan")  # IterationStats.iteration_timestamp (engine clock), if vLLM provides it
 
 
 class BenchStatLogger(StatLoggerBase):
@@ -66,9 +67,14 @@ class BenchStatLogger(StatLoggerBase):
 
         prompt_toks = 0
         gen_toks = 0
+        engine_ts = float("nan")
         if iteration_stats is not None:
             prompt_toks = getattr(iteration_stats, "num_prompt_tokens", 0)
             gen_toks = getattr(iteration_stats, "num_generation_tokens", 0)
+            try:
+                engine_ts = float(getattr(iteration_stats, "iteration_timestamp"))
+            except (AttributeError, TypeError, ValueError):
+                pass
 
         BenchStatLogger.samples.append(_Sample(
             t=time.monotonic() - (BenchStatLogger._t0 or time.monotonic()),
@@ -78,6 +84,7 @@ class BenchStatLogger(StatLoggerBase):
             num_generation_tokens=gen_toks,
             kv_cache_pct=cache_pct,
             engine_idx=engine_idx if engine_idx else self.engine_index,
+            engine_ts=engine_ts,
         ))
 
     def log_engine_initialized(self) -> None:
@@ -87,6 +94,18 @@ class BenchStatLogger(StatLoggerBase):
     def reset(cls) -> None:
         cls.samples = []
         cls._t0 = None
+
+    @classmethod
+    def iteration_rows(cls) -> tuple[list[str], list[list]]:
+        """Every recorded iteration, unsampled: per-step batch composition and
+        timestamps for step-level comparison with the simulator's iterations
+        (hardware validation). ``engine_ts`` is vLLM's own step timestamp."""
+        header = ["t", "engine_ts", "engine_idx", "prompt_tokens", "generation_tokens",
+                  "running", "waiting", "kv_cache_pct"]
+        rows = [[f"{s.t:.6f}", f"{s.engine_ts:.6f}", s.engine_idx, s.num_prompt_tokens,
+                 s.num_generation_tokens, s.num_running, s.num_waiting, f"{s.kv_cache_pct:.3f}"]
+                for s in sorted(cls.samples, key=lambda s: s.t)]
+        return header, rows
 
     @classmethod
     def downsample_to_csv_rows(cls, tick_seconds: float) -> tuple[list[str], list[list]]:

@@ -231,6 +231,15 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
     recorder.write_requests(output_dir, records)
     header, rows = BenchStatLogger.downsample_to_csv_rows(args.tick_seconds)
     recorder.write_timeseries(output_dir, header, rows)
+    # Per-iteration rows for step-level validation; never allowed to lose a run.
+    try:
+        ih, irows = BenchStatLogger.iteration_rows()
+        with (output_dir / "iterations.csv").open("w") as f:
+            f.write(",".join(ih) + "\n")
+            for r in irows:
+                f.write(",".join(str(x) for x in r) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not write iterations.csv: %s", exc)
     log.success(
         "%d requests, %d timeseries rows -> %s",
         len(records), len(rows), output_dir,
