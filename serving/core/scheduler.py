@@ -85,6 +85,9 @@ class Scheduler:
         self.kv = self.memory.kv
 
         self.logger = get_logger(self.__class__, node_id=node_id, instance_id=instance_id)
+        # --iteration-log: one row per completed batch (step-level validation
+        # against vLLM's iterations.csv); None = off
+        self.iteration_log = None
 
     # ==================== scheduling ====================
 
@@ -389,6 +392,10 @@ class Scheduler:
             return prompt_t, gen_t, end_reqs
 
         self.logger.info("Batch #%d is done", batch.batch_id)
+        if self.iteration_log is not None:
+            self.iteration_log.append((self.instance_id, batch.batch_id, batch.batch_time, finish,
+                                       finish - batch.batch_time, batch.total_len, batch.num_prefill,
+                                       batch.num_decode, sum(batch.prefill_q_list), len(batch.requests)))
 
         for req in batch.requests:
             if req.status == RequestStatus.FINISHED:

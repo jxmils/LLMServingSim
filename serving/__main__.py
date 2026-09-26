@@ -373,6 +373,10 @@ def main():
     parser.add_argument('--inputs-root', type=str, default=None,
                         help='override the root directory for generated ASTRA-Sim inputs. Defaults to '
                         'astra-sim/inputs/runs/<run-id>')
+    parser.add_argument('--iteration-log', type=str, default=None,
+                        help='write one CSV row per completed batch (instance, batch, start/end ns, '
+                        'duration, tokens, prefill/decode requests, prefill tokens) to this path, '
+                        'for step-level comparison with a vLLM run\'s iterations.csv (default: off)')
     parser.add_argument('--save-trace-text', action=argparse.BooleanOptionalAction, default=False,
                         help='write each batch\'s trace as text, for inspection (default: '
                         'disabled). Nothing in the pipeline reads it -- the Chakra converter takes '
@@ -426,6 +430,9 @@ def main():
     _shape_manifest.enable()
     args.inputs_root = run_paths.inputs_root
     args.output = _resolve_output_file(args.output, args.run_id)
+    # main() runs from astra-sim/; a relative --iteration-log means the caller's cwd
+    if args.iteration_log and not os.path.isabs(args.iteration_log):
+        args.iteration_log = os.path.join(cwd, args.iteration_log)
 
     configure_logger(level=args.log_level)
     logger = get_logger("Main")
@@ -683,6 +690,10 @@ def main():
                                        (hardware_workspace[0] is None or hardware_workspace[0] == instance.get("hardware"))
                                        else None)),
         ))
+
+    if args.iteration_log:
+        for s_ in schedulers:
+            s_.iteration_log = []
 
     # The derived KV capacity, not the utilization fraction, is what decides
     # memory pressure. It is per instance and only known once the schedulers
@@ -1410,6 +1421,14 @@ def main():
         print(f"Saving each request's information to output file: {output_file}")
         for i in range(num_instances):
             schedulers[i].save_output(output_file, is_append=False if i == 0 else True)
+    if args.iteration_log:
+        with open(args.iteration_log, "w", encoding="utf-8") as f:
+            f.write("instance,batch_id,start_ns,end_ns,duration_ns,tokens,prefill_reqs,decode_reqs,"
+                    "prefill_tokens,requests\n")
+            for i in range(num_instances):
+                for row in schedulers[i].iteration_log or []:
+                    f.write(",".join(str(x) for x in row) + "\n")
+        print(f"Per-iteration log: {args.iteration_log}")
     # KV ledger (plan sec. 6): per-tier block-state time series and byte-time
     # integrals for every instance, next to the run's other inputs.
     try:
