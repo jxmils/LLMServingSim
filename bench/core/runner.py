@@ -67,9 +67,20 @@ def register_args(p: argparse.ArgumentParser) -> None:
                    dest="kv_cache_dtype",
                    help="vLLM kv_cache_dtype.")
     p.add_argument("--enforce-eager", action="store_true", dest="enforce_eager",
-                   help="vLLM enforce_eager: no torch.compile / CUDA graphs. Use when the "
-                        "installed vLLM cannot compile the model; the profiler measures "
-                        "kernels in eager mode too, so this is the like-for-like setting.")
+                   help="vLLM enforce_eager: no torch.compile / CUDA graphs. Only for a vLLM "
+                        "that cannot compile the model: eager decode pays per-kernel launch "
+                        "overhead that the profiler's kernel timings (and so the simulator) do "
+                        "not carry, so an eager run is NOT like-for-like with the simulator.")
+    p.add_argument("--disable-allreduce-fusion", action="store_true",
+                   dest="disable_allreduce_fusion", default=False,
+                   help="compilation_config.pass_config.fuse_allreduce_rms=False: keep the "
+                        "all-reduce + RMSNorm pair as an NCCL all-reduce instead of FlashInfer's "
+                        "fused peer-to-peer kernel (on by default for TP>1 on Hopper when compiled).")
+    p.add_argument("--disable-custom-all-reduce", action="store_true",
+                   dest="disable_custom_all_reduce", default=False,
+                   help="vLLM disable_custom_all_reduce: keep every tensor-parallel all-reduce "
+                        "on NCCL (the path nccl-tests measures and the backend is calibrated "
+                        "against) instead of vLLM's peer-to-peer kernel on NVLink/PCIe pairs.")
     p.add_argument("--seed", type=int, default=42,
                    help="Sampling seed for vLLM.")
     p.add_argument("--tick-seconds", type=float, default=1.0,
@@ -162,7 +173,10 @@ async def _drive(args: argparse.Namespace, requests: list[dict], output_dir: Pat
         kv_cache_dtype=args.kv_cache_dtype,
         seed=args.seed,
         enforce_eager=args.enforce_eager,
+        disable_custom_all_reduce=getattr(args, "disable_custom_all_reduce", False),
         disable_log_stats=False,
+        **({"compilation_config": {"pass_config": {"fuse_allreduce_rms": False}}}
+           if getattr(args, "disable_allreduce_fusion", False) else {}),
     )
     engine_kwargs_for_meta = _engine_kwargs_for_meta(engine_args)
 
@@ -298,8 +312,14 @@ def _engine_kwargs_for_meta(engine_args) -> dict:
         "model", "tensor_parallel_size", "data_parallel_size",
         "enable_expert_parallel", "max_num_seqs", "max_num_batched_tokens",
         "max_model_len", "dtype", "kv_cache_dtype", "seed",
+        "enforce_eager", "disable_custom_all_reduce",
     )
-    return {k: getattr(engine_args, k, None) for k in fields}
+    out = {k: getattr(engine_args, k, None) for k in fields}
+    cc = getattr(engine_args, "compilation_config", None)
+    pc = cc.get("pass_config") if isinstance(cc, dict) else getattr(cc, "pass_config", None)
+    fuse = pc.get("fuse_allreduce_rms") if isinstance(pc, dict) else getattr(pc, "fuse_allreduce_rms", None)
+    out["fuse_allreduce_rms"] = fuse  # None = vLLM default for the optimisation level
+    return out
 
 
 # Values longer than this are recorded as a type tag instead, so one HF config

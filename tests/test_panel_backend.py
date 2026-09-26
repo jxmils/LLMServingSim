@@ -231,3 +231,23 @@ def test_calibration_keys_render_as_flags_and_system_overrides(tmp_path):
     bad = FabricSpec.load(_write(tmp_path, "d.json", dict(HYBRID, collective_launch_ns="soon")))
     with pytest.raises(ValueError):
         bad.system_overrides()
+
+
+def test_protocol_and_efficiency_keys(tmp_path):
+    """Step latency (NCCL Simple-protocol handshake), splits in flight and
+    per-collective bandwidth efficiency land in system.json; bad values refuse."""
+    raw = dict(HYBRID, step_latency_ns=3000, step_latency_min_bytes=65536, active_chunks=2,
+               collective_bw_efficiency={"all-gather": 0.93, "reduce-scatter": 0.945, "all-to-all": 0.865})
+    spec = FabricSpec.load(_write(tmp_path, "e.json", raw))
+    ov = spec.system_overrides()
+    assert ov["collective-step-latency-ns"] == 3000 and ov["collective-step-latency-min-bytes"] == 65536
+    assert ov["active-chunks-per-dimension"] == 2
+    assert ov["collective-bw-efficiency"] == {"all-gather": 0.93, "reduce-scatter": 0.945, "all-to-all": 0.865}
+    for bad in ({"collective_bw_efficiency": {"all-gather": 1.2}},
+                {"collective_bw_efficiency": {"broadcast": 0.9}},
+                {"collective_bw_efficiency": 0.9},
+                {"active_chunks": 0},
+                {"step_latency_ns": -1}):
+        spec = FabricSpec.load(_write(tmp_path, "bad.json", dict(HYBRID, **bad)))
+        with pytest.raises(ValueError):
+            spec.system_overrides()

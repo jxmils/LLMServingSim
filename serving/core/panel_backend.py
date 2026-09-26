@@ -22,7 +22,7 @@ Panel-Scale-Systems/docs/SERVING_INTEGRATION_G0.md for the unit contract.
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 # Flag names the backend's protocol implementation accepts, in the order they
@@ -63,7 +63,12 @@ _FRONTEND_KEYS = {
     "collective_launch_ns",    # int:  system.json collective-launch-delay-ns
     "dataset_split_bytes",     # int:  system.json dataset-split-bytes
     "max_dataset_splits",      # int:  system.json preferred-dataset-splits (the maximum with split bytes)
+    "active_chunks",           # int:  system.json active-chunks-per-dimension (splits in flight)
+    "step_latency_ns",         # int:  system.json collective-step-latency-ns (per ring step, Simple protocol)
+    "step_latency_min_bytes",  # int:  system.json collective-step-latency-min-bytes (LL -> Simple switch)
+    "collective_bw_efficiency",  # {all-reduce|all-gather|reduce-scatter|all-to-all: (0, 1]}
 }
+_BW_EFF_COLLECTIVES = ("all-reduce", "all-gather", "reduce-scatter", "all-to-all")
 _KNOWN_KEYS = {k for k, _ in _SCALAR_OPTS} | {k for k, _ in _FLAG_OPTS} | _FRONTEND_KEYS | {
     "spec_version", "name", "nodes", "extra", "description", "source",
     # written by compose_fabric.py: the MemoryPoolSpec this graph was composed
@@ -157,18 +162,35 @@ class FabricSpec:
             raise ValueError(f"FabricSpec {self.name}: recv_flow_finish is a boolean flag")
         return ["--recv-flow-finish"]
 
-    def system_overrides(self) -> Dict[str, int]:
+    def system_overrides(self) -> Dict[str, Any]:
         """system.json keys this fabric pins (collective calibration)."""
-        out = {}
+        out: Dict[str, Any] = {}
         for key, sys_key in (("collective_launch_ns", "collective-launch-delay-ns"),
                              ("dataset_split_bytes", "dataset-split-bytes"),
-                             ("max_dataset_splits", "preferred-dataset-splits")):
+                             ("max_dataset_splits", "preferred-dataset-splits"),
+                             ("active_chunks", "active-chunks-per-dimension"),
+                             ("step_latency_ns", "collective-step-latency-ns"),
+                             ("step_latency_min_bytes", "collective-step-latency-min-bytes")):
             v = self.options.get(key)
             if v is None:
                 continue
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
                 raise ValueError(f"FabricSpec {self.name}: {key} must be a non-negative integer")
+            if key == "active_chunks" and v < 1:
+                raise ValueError(f"FabricSpec {self.name}: active_chunks must be >= 1")
             out[sys_key] = v
+        eff = self.options.get("collective_bw_efficiency")
+        if eff is not None:
+            if not isinstance(eff, dict):
+                raise ValueError(f"FabricSpec {self.name}: collective_bw_efficiency must be an object "
+                                 f"keyed by {', '.join(_BW_EFF_COLLECTIVES)}")
+            for k, v in eff.items():
+                if k not in _BW_EFF_COLLECTIVES:
+                    raise ValueError(f"FabricSpec {self.name}: collective_bw_efficiency.{k}: unknown collective "
+                                     f"(expected one of {', '.join(_BW_EFF_COLLECTIVES)})")
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0.0 < float(v) <= 1.0):
+                    raise ValueError(f"FabricSpec {self.name}: collective_bw_efficiency.{k} must be in (0, 1]")
+            out["collective-bw-efficiency"] = {k: float(v) for k, v in eff.items()}
         return out
 
 
@@ -221,7 +243,7 @@ def flatten_network_config(network_config_path: str, out_path: Optional[str] = N
 
 def flatten_system_config(system_config_path: str, out_path: Optional[str] = None,
                           keep: Optional[List[int]] = None,
-                          overrides: Optional[Dict[str, int]] = None) -> str:
+                          overrides: Optional[Dict[str, Any]] = None) -> str:
     """Write the panel backend's copy of system.json whose per-dimension
     collective implementation lists match the kept network dimensions (the
     system layer asserts that they do not exceed the dimension count)."""

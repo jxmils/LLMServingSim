@@ -44,7 +44,10 @@ catalog:
     qk_norm:
       vllm: RMSNorm
       within: Qwen3MoeAttention
-      tp_stable: true
+      # Not tp_stable: q_norm/k_norm normalise the rank's own heads
+      # (num_heads/tp and num_kv_heads/tp of head_dim), so the kernel's
+      # work shrinks with TP. Replicating tp1's rows (the old flag)
+      # charged TP4 ~3x the measured cost at 2,048 tokens on H100.
     rotary_emb:
       vllm: RotaryEmbedding
     o_proj:

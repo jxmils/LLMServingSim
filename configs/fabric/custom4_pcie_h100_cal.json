@@ -1,7 +1,7 @@
 {
   "spec_version": 1,
   "name": "custom4-pcie-h100-cal",
-  "description": "Calibrated 4x H100 PCIe node fabric for TP4 (hardware validation 2026-09-26): ring-only PCIe graph (the NVLink bridge cannot serve a ring), 17.3 GiB/s per direction (measured NCCL plateau), 300 ns effective per-hop latency and a 24 us collective launch floor (both read off nccl-tests at 8 B), persistent channels (-preconnected), receiver-side completion (--recv-flow-finish), 4 MiB dataset splits up to 16. Against nccl-tests on htc-g055: all-reduce within -12..+10 % at <= 64 KiB and >= 4 MiB, 14-25 % fast at 256 KiB-1 MiB (NCCL protocol regime), all-gather/reduce-scatter 5-9 % fast at large sizes, all-to-all 10-17 % fast.",
+  "description": "Calibrated 4x H100 PCIe node fabric (hardware validation, 2026-09-26): ring-only PCIe graph (the GPU2-GPU3 NVLink bridge cannot serve a ring), 17.3 GiB/s per direction (NCCL all-reduce plateau), 300 ns effective hop and a 24 us collective launch floor (nccl-tests at 8 B), persistent channels (-preconnected), receiver-side completion (--recv-flow-finish), 4 MiB dataset splits (max 16) with 2 in flight, a 3 us per-step latency once a step's chunk reaches 64 KiB (NCCL's LL -> Simple protocol switch) and plateau efficiencies relative to all-reduce of all-gather 0.93, reduce-scatter 0.945, all-to-all 0.865. Against the clean nccl-tests run on htc-g055 (job 8895380), at the sizes where two NCCL runs agree within 5 %: mean |error| 4.8 % all-reduce, 2.8 % all-gather, 5.4 % reduce-scatter, 3.4 % all-to-all; all-reduce within +-3 % from 512 KiB to 2 GiB; outliers are the <= 2 KiB floor (-9..-14 %) and 32 KiB (+11 %, packet quantisation).",
   "nodes": 4,
   "panel": "custom",
   "graph": "custom4_pcie_h100_ring.graph",
@@ -17,5 +17,13 @@
   "recv_flow_finish": true,
   "collective_launch_ns": 24000,
   "dataset_split_bytes": 4194304,
-  "max_dataset_splits": 16
+  "max_dataset_splits": 16,
+  "active_chunks": 2,
+  "step_latency_ns": 3000,
+  "step_latency_min_bytes": 65536,
+  "collective_bw_efficiency": {
+    "all-gather": 0.93,
+    "reduce-scatter": 0.945,
+    "all-to-all": 0.865
+  }
 }

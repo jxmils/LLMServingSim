@@ -20,7 +20,9 @@ import argparse
 import json
 import sys
 
+from serving.core import model_arch
 from serving.core.memory_model import MemoryModel, GB_TO_BYTE
+from serving.core.utils import get_config
 
 
 def main(argv=None):
@@ -28,10 +30,15 @@ def main(argv=None):
     ap.add_argument("meta", help="bench run meta.json")
     ap.add_argument("--model", required=True)
     ap.add_argument("--tp", type=int, required=True)
-    ap.add_argument("--ep", type=int, default=1)
+    ap.add_argument("--ep", type=int, default=None,
+                    help="expert-parallel degree; default as the simulator resolves it (config_builder): "
+                         "tp for an MoE model, 1 for a dense one. vLLM's TP-sharded experts (no "
+                         "--enable-expert-parallel) hold the same bytes per rank as EP=tp.")
     ap.add_argument("--pp", type=int, default=1)
     ap.add_argument("--hbm-gib", type=float, default=None,
-                    help="per-rank HBM in GiB; default: meta.json hardware.total_memory_bytes")
+                    help="per-rank HBM in GiB; pass the cluster config's npu_mem.mem_size so the simulator "
+                         "(KV = mem_size - weights - workspace) reproduces vLLM's block count exactly; "
+                         "default: meta.json hardware.total_memory_bytes")
     ap.add_argument("--dtype", default="bfloat16")
     ap.add_argument("--kv-cache-dtype", default="auto")
     a = ap.parse_args(argv)
@@ -52,9 +59,13 @@ def main(argv=None):
     fp = {"bfloat16": 16, "float16": 16, "float32": 32, "fp8": 8, "int8": 8}[a.dtype]
     # A throwaway model at utilization 1.0 gives the weights and KV bytes per
     # token per rank under the frontend's own accounting.
-    mm = MemoryModel(a.model, 0, 0, a.tp * a.pp * a.ep, a.tp, hbm_bytes / GB_TO_BYTE, 1, kv["block_size"], fp,
-                     False, False, None, None, ep_size=a.ep, pp_size=a.pp,
-                     kv_cache_dtype=a.kv_cache_dtype, npu_memory_utilization=1.0)
+    def model(ep):
+        return MemoryModel(a.model, 0, 0, a.tp * a.pp, a.tp, hbm_bytes / GB_TO_BYTE, 1, kv["block_size"], fp,
+                           False, False, None, None, ep_size=ep, pp_size=a.pp,
+                           kv_cache_dtype=a.kv_cache_dtype, npu_memory_utilization=1.0)
+    if a.ep is None:
+        a.ep = a.tp if model_arch.moe_layout(get_config(a.model)) is not None else 1
+    mm = model(a.ep)
     kv_bytes = int(kv["num_gpu_blocks"]) * int(kv["block_size"]) * mm._bytes_per_token
     workspace = hbm_bytes - mm.weight - kv_bytes
     util = kv.get("gpu_memory_utilization")
