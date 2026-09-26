@@ -1,37 +1,43 @@
 profiler_version: 1.0.0
-vllm_version: 0.19.2.dev0+precompiled
-cuda_version: '12.9'
+vllm_version: 0.19.2.dev0
+cuda_version: '13.0'
 gpu: NVIDIA H100 PCIe
 hardware: H100PCIE
-profiled_at: '2026-09-25T23:12:25+00:00'
+profiled_at: '2026-09-26T07:45:18+00:00'
 architecture: qwen3_moe
-architecture_sha256: 784ed86cdd6b8a71c1c8cc82a5af96e49a70607e40ac8570b7b9341eb3dc5800
+architecture_sha256: b58abc4aa0e1d6ab6f20c6a02d7a891242ad5ca6bf9a551d4fdaec2edc4c338d
 model: Qwen/Qwen3-30B-A3B-Instruct-2507
 variant: bf16
-tp_degrees:
-- 1
-- 2
-- 4
+tp_degrees: [1, 2, 4, 8]
 engine_effective:
-  enforce_eager: true
   load_format: dummy
+  enforce_eager: true
+  skip_tokenizer_init: true
+  enable_prefix_caching: false
+  generation_config: vllm
+  tensor_parallel_size: 1
+  block_size: 16
+  gpu_memory_utilization: 0.9
   max_num_batched_tokens: 2048
   max_num_seqs: 256
-  tensor_parallel_size: 1
+  hf_overrides:
+    num_hidden_layers: 1
+    intermediate_size: 768
+    num_attention_heads: 4
+    num_key_value_heads: 1
+    vocab_size: 18992
+  worker_extension_cls: profiler.core.hooks.extension.Extension
+  model: /data/engs-glass/catz0932/panel-serving-hwval-20260925/.tmp/8908662/profiler_model_dul8vdae
 attention_grid:
   max_kv: 16384
   chunk_factor: 2.0
   kv_factor: 2.0
-  chunks: 0..2048 (9 points)
-  n_decode: 0..256 (10 points)
-  kv: 0..16384 (12 points)
+  chunks: 0, 16-2048 x2
+  n_decode: 0, 1-256 x2
+  kv: 0, 16-16384 x2
 measurement_iterations: 3
 skew_profile:
   enabled: false
 skew_fit:
   enabled: false
-  note: no skew sweep; alpha = 0
-meta_written_offline:
-  by: serving/tools/write_bundle_meta.py
-  reason: 'HTC job 8895295 (htc-g055, tp8 pending): profiler persist_meta died on
-    a missing pandas (skew fit only); every category CSV was complete'
+  note: no skew.csv in any tp folder (SKIP_SKEW or not yet profiled)
